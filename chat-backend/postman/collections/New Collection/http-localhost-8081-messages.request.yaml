@@ -1,0 +1,17 @@
+$kind: http-request
+name: http://localhost:8081/messages
+description: ""
+url: http://localhost:8081/messages
+method: GET
+body:
+  type: json
+  content: "{\r
+
+    \  \"sender\": \"rafiya\",\r
+
+    \  \"receiver\": \"friend\",\r
+
+    \  \"text\": \"Hello! This is my first message.\"\r
+
+    }"
+order: 1784987121375
