@@ -14,4 +14,9 @@ public class ChatController {
                 .contentType(MediaType.TEXT_PLAIN)
                 .body("ConnectChat backend is running successfully!");
     }
+
+    @GetMapping(value = "/health", produces = MediaType.TEXT_PLAIN_VALUE)
+    public String health() {
+        return "OK";
+    }
 }
