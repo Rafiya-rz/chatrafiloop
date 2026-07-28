@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { Client } from "@stomp/stompjs";
 import "./App.css";
 
-const API_URL = "http://localhost:8081";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8081";
+
+const WS_URL = API_URL
+  .replace("https://", "wss://")
+  .replace("http://", "ws://");
 
 function App() {
   const [currentUser, setCurrentUser] = useState(
@@ -48,7 +52,7 @@ function App() {
     const token = localStorage.getItem("connectChatToken");
 
     const client = new Client({
-      brokerURL: "ws://localhost:8081/ws",
+      brokerURL: `${WS_URL}/ws`,
       reconnectDelay: 5000,
       connectHeaders: token
         ? { Authorization: `Bearer ${token}` }
