@@ -1,13 +1,17 @@
 package com.connectchat.chat_backend;
 
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class ChatController {
 
-    @GetMapping("/")
-    public String home() {
-        return "Chat Backend is running successfully!";
+    @GetMapping(value = "/", produces = MediaType.TEXT_PLAIN_VALUE)
+    public ResponseEntity<String> home() {
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_PLAIN)
+                .body("ConnectChat backend is running successfully!");
     }
 }
