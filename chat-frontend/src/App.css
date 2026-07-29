@@ -2,28 +2,42 @@
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
   font-family: Arial, sans-serif;
   background: #eef3ff;
 }
 
+button,
+input {
+  font: inherit;
+}
+
 #root {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .app {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
 }
 
 .chat-card {
-  width: min(100%, 950px);
-  height: min(700px, calc(100vh - 48px));
+  width: min(100%, 1100px);
+  height: min(760px, calc(100dvh - 48px));
+  min-height: 0;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   overflow: hidden;
   border-radius: 20px;
   background: white;
@@ -31,7 +45,11 @@ body {
 }
 
 .sidebar {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 28px 18px;
+  overflow: hidden;
   background: #213b7b;
   color: white;
 }
@@ -42,32 +60,47 @@ body {
 }
 
 .subtitle {
+  margin: 8px 0 22px;
   color: #cbd7ff;
-  margin-bottom: 28px;
+}
+
+.contact-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .contact {
+  width: 100%;
   display: flex;
-  gap: 12px;
   align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
   padding: 12px;
+  border: 0;
   border-radius: 12px;
+  background: transparent;
+  color: white;
+  text-align: left;
+  cursor: pointer;
 }
 
-.contact.active {
+.contact.active,
+.contact:hover {
   background: #3554a6;
 }
 
 .contact p,
 .chat-header p {
   margin: 4px 0 0;
-  font-size: 13px;
   color: #66d9a0;
+  font-size: 13px;
 }
 
 .avatar {
   width: 42px;
   height: 42px;
+  flex: 0 0 42px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -76,18 +109,31 @@ body {
   font-weight: bold;
 }
 
+.logout-button {
+  width: 100%;
+  margin-top: auto;
+  padding: 10px;
+  border: 1px solid #8ea6ec;
+  border-radius: 10px;
+  background: transparent;
+  color: white;
+  cursor: pointer;
+}
+
 .chat-area {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
   min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .chat-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 18px 24px;
-  border-bottom: 1px solid #e8ecf5;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e4e9f5;
+  background: white;
 }
 
 .chat-header h2 {
@@ -95,7 +141,10 @@ body {
 }
 
 .messages {
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px;
   display: flex;
   flex-direction: column;
@@ -104,155 +153,208 @@ body {
 }
 
 .message {
-  max-width: 75%;
   width: fit-content;
-  padding: 12px 16px;
-  border-radius: 16px 16px 16px 4px;
-  background: #e3eaff;
-  color: #1f2a44;
+  max-width: min(75%, 520px);
+  padding: 12px 14px;
+  border-radius: 16px;
+  overflow-wrap: anywhere;
+  background: #e2eaff;
+  color: #15294d;
 }
 
-.message.mine {
+.message.own-message {
   align-self: flex-end;
-  border-radius: 16px 16px 4px 16px;
-  background: #3563d9;
+  background: #3865dc;
   color: white;
 }
 
 .message small {
   display: block;
   margin-top: 6px;
-  font-size: 11px;
-  opacity: 0.75;
+  opacity: 0.8;
+  font-size: 12px;
 }
 
 .delete-button {
   display: block;
-  margin-top: 8px;
+  margin-top: 6px;
   padding: 0;
   border: 0;
   background: transparent;
-  color: #ffd5d5;
-  font-size: 11px;
+  color: inherit;
+  font-size: 12px;
+  text-decoration: underline;
   cursor: pointer;
 }
 
 .message-form {
+  min-width: 0;
   display: flex;
   gap: 10px;
   padding: 18px 24px;
-  border-top: 1px solid #e8ecf5;
+  border-top: 1px solid #e4e9f5;
+  background: white;
 }
 
 .message-form input {
+  min-width: 0;
   flex: 1;
-  padding: 12px;
-  border: 1px solid #cdd6ea;
+  padding: 13px;
+  border: 1px solid #cbd7ef;
   border-radius: 10px;
-  font-size: 15px;
+  outline: none;
 }
 
-.message-form button {
+.message-form button,
+.auth-card button {
   border: 0;
   border-radius: 10px;
-  padding: 0 20px;
-  background: #3563d9;
+  padding: 12px 20px;
+  background: #3865dc;
   color: white;
   font-weight: bold;
   cursor: pointer;
 }
 
+.message-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error-message {
+  color: #d52222;
+}
+
 .auth-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
 }
 
 .auth-card {
-  width: min(100%, 400px);
-  padding: 36px;
+  width: min(100%, 460px);
+  padding: 38px;
   border-radius: 20px;
   background: white;
   box-shadow: 0 20px 60px rgba(32, 59, 122, 0.18);
 }
 
 .auth-card h1 {
-  margin: 0;
+  margin-top: 0;
   color: #213b7b;
-  font-size: 32px;
-}
-
-.auth-card form {
-  display: grid;
-  gap: 14px;
-  margin-top: 24px;
-}
-
-.auth-card input,
-.auth-card button {
-  padding: 13px;
-  border-radius: 10px;
-  font-size: 15px;
 }
 
 .auth-card input {
-  border: 1px solid #cdd6ea;
+  width: 100%;
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px solid #cbd7ef;
+  border-radius: 10px;
 }
 
 .auth-card button {
-  border: 0;
-  background: #3563d9;
-  color: white;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.auth-card a {
+  color: #3865dc;
   font-weight: bold;
   cursor: pointer;
 }
 
-.switch-button {
-  width: 100%;
-  margin-top: 16px;
-  background: transparent !important;
-  color: #3563d9 !important;
-}
+@media (max-width: 700px) {
+  .app {
+    display: block;
+    min-height: 100dvh;
+    padding: 0;
+  }
 
-.success-message {
-  color: #16834a;
-}
+  .chat-card {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    border-radius: 0;
+  }
 
-.error-message {
-  color: #c62828;
-}
+  .sidebar {
+    padding: 14px 16px 10px;
+    overflow: visible;
+  }
 
-.logout-button {
-  width: 100%;
-  margin-top: 24px;
-  padding: 10px;
-  border: 1px solid #8ea6ec;
-  border-radius: 10px;
-  background: transparent;
-  color: white;
-  cursor: pointer;
-}
-.contact {
-  width: 100%;
-  border: 0;
-  color: white;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  margin-bottom: 8px;
-}
+  .sidebar h1 {
+    font-size: 24px;
+  }
 
-.contact:not(.active) {
-  background: transparent;
-}
+  .subtitle {
+    margin: 4px 0 12px;
+  }
 
-.contact:hover {
-  background: #3554a6;
-}
+  .contact-list {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+  }
 
-.message-form button:disabled,
-.message-form input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  .contact {
+    width: auto;
+    min-width: 145px;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 9px 10px;
+  }
+
+  .contact p {
+    font-size: 12px;
+  }
+
+  .logout-button {
+    margin-top: 12px;
+    padding: 8px;
+  }
+
+  .chat-header {
+    padding: 14px 16px;
+  }
+
+  .chat-header h2 {
+    font-size: 20px;
+  }
+
+  .messages {
+    padding: 14px 16px;
+    gap: 10px;
+  }
+
+  .message {
+    max-width: 85%;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+
+  .message-form {
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    gap: 8px;
+  }
+
+  .message-form input {
+    padding: 12px;
+  }
+
+  .message-form button {
+    padding: 0 14px;
+  }
+
+  .auth-page {
+    padding: 16px;
+  }
+
+  .auth-card {
+    padding: 28px 22px;
+  }
 }
