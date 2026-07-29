@@ -51,16 +51,18 @@ public class UserController {
 
     @PostMapping("/login")
     public ResponseEntity<?> loginUser(@RequestBody User user) {
-        return userRepository.findByUsername(user.getUsername())
-                .filter(foundUser ->
-                        passwordEncoder.matches(user.getPassword(), foundUser.getPassword())
-                )
-                .map(foundUser -> ResponseEntity.ok(Map.of(
-                        "token", jwtService.createToken(foundUser.getUsername()),
-                        "username", foundUser.getUsername()
-                )))
-                .orElseGet(() -> ResponseEntity.status(401)
-                        .body(Map.of("error", "Wrong username or password.")));
+        var foundUser = userRepository.findByUsername(user.getUsername());
+
+        if (foundUser.isEmpty()
+                || !passwordEncoder.matches(user.getPassword(), foundUser.get().getPassword())) {
+            return ResponseEntity.status(401)
+                    .body(Map.of("error", "Wrong username or password."));
+        }
+
+        return ResponseEntity.ok(Map.of(
+                "token", jwtService.createToken(foundUser.get().getUsername()),
+                "username", foundUser.get().getUsername()
+        ));
     }
 
     @GetMapping
