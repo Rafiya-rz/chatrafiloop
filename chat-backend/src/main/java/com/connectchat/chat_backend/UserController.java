@@ -28,11 +28,21 @@ public class UserController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<String> registerUser(@RequestBody User user) {
-        if (userRepository.existsByUsername(user.getUsername())) {
-            return ResponseEntity.badRequest().body("Username already exists.");
+    public ResponseEntity<?> registerUser(@RequestBody User user) {
+        if (user.getUsername() == null || user.getUsername().isBlank()
+                || user.getPassword() == null || user.getPassword().isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body("Username and password are required.");
         }
 
+        String username = user.getUsername().trim();
+
+        if (userRepository.existsByUsername(username)) {
+            return ResponseEntity.badRequest()
+                    .body("Username already exists.");
+        }
+
+        user.setUsername(username);
         user.setPassword(passwordEncoder.encode(user.getPassword()));
         userRepository.save(user);
 
