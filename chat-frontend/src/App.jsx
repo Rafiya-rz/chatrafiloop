@@ -72,7 +72,7 @@ function App() {
 });
 
           const belongsToCurrentChat =
-            (message.sender === currentUser &&
+            (message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()&&
               message.receiver === selectedUser) ||
             (message.sender === selectedUser &&
               message.receiver === currentUser);
@@ -361,7 +361,7 @@ function App() {
               <div
                 key={message.id}
                 className={`message ${
-                  message.sender === currentUser ? "mine" : ""
+                  message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()? "mine" : ""
                 }`}
               >
                 <span>{message.text}</span>
@@ -373,7 +373,7 @@ function App() {
                   })}
                 </small>
 
-                {message.sender === currentUser && (
+                {message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()&& (
                   <button
                     className="delete-button"
                     onClick={() => deleteMessage(message.id)}
