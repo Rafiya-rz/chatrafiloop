@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/users")
@@ -51,10 +52,14 @@ public class UserController {
 
     @PostMapping("/login")
     public ResponseEntity<?> loginUser(@RequestBody User user) {
-        var foundUser = userRepository.findByUsername(user.getUsername());
+        Optional<User> foundUser =
+                userRepository.findByUsername(user.getUsername());
 
         if (foundUser.isEmpty()
-                || !passwordEncoder.matches(user.getPassword(), foundUser.get().getPassword())) {
+                || !passwordEncoder.matches(
+                user.getPassword(),
+                foundUser.get().getPassword()
+        )) {
             return ResponseEntity.status(401)
                     .body(Map.of("error", "Wrong username or password."));
         }
