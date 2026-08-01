@@ -1,7 +1,7 @@
 package com.connectchat.chat_backend.entity;
 
 import jakarta.persistence.*;
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Entity
 @Table(name = "messages")
@@ -17,7 +17,7 @@ public class Message {
 
     private String text;
 
-    private LocalDateTime sentAt;
+    private Instant sentAt;
 
     public Message() {
     }
@@ -26,7 +26,7 @@ public class Message {
         this.sender = sender;
         this.receiver = receiver;
         this.text = text;
-        this.sentAt = LocalDateTime.now();
+        this.sentAt = Instant.now();
     }
 
     public Long getId() {
@@ -57,11 +57,11 @@ public class Message {
         this.text = text;
     }
 
-    public LocalDateTime getSentAt() {
+    public Instant getSentAt() {
         return sentAt;
     }
 
-    public void setSentAt(LocalDateTime sentAt) {
+    public void setSentAt(Instant sentAt) {
         this.sentAt = sentAt;
     }
 }

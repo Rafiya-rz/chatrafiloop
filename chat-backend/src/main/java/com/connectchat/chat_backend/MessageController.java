@@ -7,7 +7,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.List;
 
 @RestController
@@ -43,7 +43,7 @@ public class MessageController {
         }
 
         message.setSender(authentication.getName());
-        message.setSentAt(LocalDateTime.now());
+        message.setSentAt(Instant.now());
 
         Message savedMessage = messageRepository.save(message);
 

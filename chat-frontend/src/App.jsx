@@ -316,7 +316,7 @@ function App() {
             messages.map((message) => {
               const isMine =
                 message.sender?.trim().toLowerCase() ===
-                currentUser.trim().toLowerCase();
+                currentUser?.trim().toLowerCase();
 
               return (
                 <article
