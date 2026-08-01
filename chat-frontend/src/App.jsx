@@ -1,133 +1,67 @@
 import { useEffect, useState } from "react";
-import { Client } from "@stomp/stompjs";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8081";
-
-const WS_URL = API_URL
-  .replace("https://", "wss://")
-  .replace("http://", "ws://");
+const API_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:8081";
 
 function App() {
   const [currentUser, setCurrentUser] = useState(
     localStorage.getItem("connectChatUser") || ""
   );
 
+  const [token, setToken] = useState(
+    localStorage.getItem("connectChatToken") || ""
+  );
+
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState("");
-
-  const [authMode, setAuthMode] = useState("login");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [authMessage, setAuthMessage] = useState("");
-  const [authError, setAuthError] = useState("");
-
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
-  const [error, setError] = useState("");
+
+  const [authMode, setAuthMode] = useState("register");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [messageError, setMessageError] = useState("");
 
   function getAuthHeaders() {
-    const token = localStorage.getItem("connectChatToken");
-
-    return token
-      ? { Authorization: `Bearer ${token}` }
-      : {};
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    };
   }
 
-  useEffect(() => {
-    if (currentUser) {
-      loadUsers();
-    }
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (currentUser && selectedUser) {
-      loadMessages();
-    }
-  }, [currentUser, selectedUser]);
-
-  useEffect(() => {
-    if (!currentUser || !selectedUser) return;
-
-    const token = localStorage.getItem("connectChatToken");
-
-    const client = new Client({
-      brokerURL: `${WS_URL}/ws`,
-      reconnectDelay: 5000,
-      connectHeaders: token
-        ? { Authorization: `Bearer ${token}` }
-        : {},
-
-      onConnect: () => {
-        client.subscribe("/topic/messages", (frame) => {
-          const message = JSON.parse(frame.body);
-          client.subscribe("/topic/deleted-messages", (frame) => {
-  const deletedMessageId = Number(frame.body);
-
-  setMessages((oldMessages) =>
-    oldMessages.filter(
-      (message) => message.id !== deletedMessageId
-    )
-  );
-});
-
-          const belongsToCurrentChat =
-            (message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()&&
-              message.receiver === selectedUser) ||
-            (message.sender === selectedUser &&
-              message.receiver === currentUser);
-
-          if (!belongsToCurrentChat) return;
-
-          setMessages((oldMessages) => {
-            const alreadyExists = oldMessages.some(
-              (oldMessage) => oldMessage.id === message.id
-            );
-
-            return alreadyExists
-              ? oldMessages
-              : [...oldMessages, message];
-          });
-        });
-      },
-    });
-
-    client.activate();
-
-    return () => {
-      client.deactivate();
-    };
-  }, [currentUser, selectedUser]);
-
   async function loadUsers() {
+    if (!token) return;
+
     try {
       const response = await fetch(`${API_URL}/users`, {
         headers: getAuthHeaders(),
       });
 
-      if (!response.ok) throw new Error();
+      if (!response.ok) return;
 
       const data = await response.json();
-      const otherUsers = data.filter((user) => user !== currentUser);
+
+      const otherUsers = data.filter(
+        (user) =>
+          user.trim().toLowerCase() !== currentUser.trim().toLowerCase()
+      );
 
       setUsers(otherUsers);
 
-      setSelectedUser((oldUser) => {
-        if (oldUser) return oldUser;
-
-        return otherUsers.includes("friend")
-          ? "friend"
-          : otherUsers[0] || "";
-      });
+      if (!selectedUser && otherUsers.length > 0) {
+        setSelectedUser(otherUsers[0]);
+      }
     } catch {
-      setError("Cannot load registered users.");
+      setMessageError("Cannot load users.");
     }
   }
 
   async function loadMessages() {
-    try {
-      setError("");
+    if (!token || !currentUser || !selectedUser) return;
 
+    try {
       const response = await fetch(
         `${API_URL}/messages/chat?firstUser=${encodeURIComponent(
           currentUser
@@ -137,48 +71,71 @@ function App() {
         }
       );
 
-      if (!response.ok) throw new Error();
+      if (!response.ok) return;
 
-      setMessages(await response.json());
+      const data = await response.json();
+      setMessages(data);
     } catch {
-      setError("Cannot load messages.");
+      setMessageError("Cannot load messages.");
     }
   }
+
+  useEffect(() => {
+    loadUsers();
+  }, [token, currentUser]);
+
+  useEffect(() => {
+    loadMessages();
+
+    const refreshMessages = setInterval(() => {
+      loadMessages();
+    }, 2000);
+
+    return () => clearInterval(refreshMessages);
+  }, [token, currentUser, selectedUser]);
 
   async function handleAuth(event) {
     event.preventDefault();
     setAuthError("");
-    setAuthMessage("");
 
     const endpoint =
-      authMode === "login" ? "/users/login" : "/users/register";
+      authMode === "register" ? "/users/register" : "/users/login";
 
     try {
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: username.trim(),
+          password,
+        }),
       });
 
+      const data = await response.json().catch(() => null);
+
       if (!response.ok) {
-        const text = await response.text();
-        setAuthError(text || "Login failed.");
+        setAuthError(
+          typeof data === "string"
+            ? data
+            : data?.error || "Registration or login failed."
+        );
         return;
       }
 
       if (authMode === "register") {
-        setAuthMessage("Registration successful. Now sign in.");
+        setAuthError("Registration successful. Now click Login.");
         setAuthMode("login");
-        setPassword("");
         return;
       }
-
-      const data = await response.json();
 
       localStorage.setItem("connectChatUser", data.username);
       localStorage.setItem("connectChatToken", data.token);
 
       setCurrentUser(data.username);
+      setToken(data.token);
+      setUsername("");
       setPassword("");
     } catch {
       setAuthError("Cannot connect to the backend.");
@@ -188,39 +145,32 @@ function App() {
   async function sendMessage(event) {
     event.preventDefault();
 
-    if (!selectedUser || newMessage.trim() === "") return;
+    if (!newMessage.trim() || !selectedUser) return;
+
+    setMessageError("");
 
     try {
       const response = await fetch(`${API_URL}/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthHeaders(),
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           sender: currentUser,
           receiver: selectedUser,
-          text: newMessage,
+          text: newMessage.trim(),
         }),
       });
 
-      if (!response.ok) throw new Error();
-
-      const savedMessage = await response.json();
-
-      setMessages((oldMessages) => {
-        const alreadyExists = oldMessages.some(
-          (oldMessage) => oldMessage.id === savedMessage.id
-        );
-
-        return alreadyExists
-          ? oldMessages
-          : [...oldMessages, savedMessage];
-      });
+      if (!response.ok) {
+        setMessageError("Message could not be sent.");
+        return;
+      }
 
       setNewMessage("");
+
+      // This loads the new message immediately.
+      await loadMessages();
     } catch {
-      setError("Message was not sent.");
+      setMessageError("Message could not be sent.");
     }
   }
 
@@ -231,13 +181,14 @@ function App() {
         headers: getAuthHeaders(),
       });
 
-      if (!response.ok) throw new Error();
+      if (!response.ok) {
+        setMessageError("Message could not be deleted.");
+        return;
+      }
 
-      setMessages((oldMessages) =>
-        oldMessages.filter((message) => message.id !== id)
-      );
+      await loadMessages();
     } catch {
-      setError("Message could not be deleted.");
+      setMessageError("Message could not be deleted.");
     }
   }
 
@@ -246,61 +197,70 @@ function App() {
     localStorage.removeItem("connectChatToken");
 
     setCurrentUser("");
-    setSelectedUser("");
+    setToken("");
     setMessages([]);
+    setSelectedUser("");
+    setUsers([]);
   }
 
-  if (!currentUser) {
+  function formatTime(sentAt) {
+    if (!sentAt) return "";
+
+    const date = new Date(sentAt);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  if (!currentUser || !token) {
     return (
       <main className="auth-page">
         <section className="auth-card">
           <h1>ConnectChat</h1>
+
           <p>
-            {authMode === "login"
-              ? "Welcome back"
-              : "Create your account"}
+            {authMode === "register"
+              ? "Create your account"
+              : "Login to your account"}
           </p>
 
           <form onSubmit={handleAuth}>
             <input
+              type="text"
+              placeholder="Username"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="Username"
               required
             />
 
             <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
               type="password"
               placeholder="Password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               required
             />
 
             <button type="submit">
-              {authMode === "login" ? "Login" : "Register"}
+              {authMode === "register" ? "Register" : "Login"}
             </button>
           </form>
 
-          {authMessage && (
-            <p className="success-message">{authMessage}</p>
-          )}
-
-          {authError && (
-            <p className="error-message">{authError}</p>
-          )}
+          {authError && <p className="error-message">{authError}</p>}
 
           <button
-            className="switch-button"
-            onClick={() => {
-              setAuthMode(authMode === "login" ? "register" : "login");
-              setAuthError("");
-              setAuthMessage("");
-            }}
+            className="link-button"
+            onClick={() =>
+              setAuthMode(authMode === "register" ? "login" : "register")
+            }
           >
-            {authMode === "login"
-              ? "New user? Register here"
-              : "Already have an account? Login"}
+            {authMode === "register"
+              ? "Already have an account? Login"
+              : "Need an account? Register"}
           </button>
         </section>
       </main>
@@ -308,108 +268,90 @@ function App() {
   }
 
   return (
-    <main className="app">
-      <section className="chat-card">
-        <aside className="sidebar">
-          <h1>ConnectChat</h1>
-          <p className="subtitle">Logged in as {currentUser}</p>
+    <main className="chat-app">
+      <aside className="sidebar">
+        <h1>ConnectChat</h1>
+        <p>Logged in as {currentUser}</p>
 
-          <div className="contact-list">
-            {users.map((user) => (
-              <button
-                key={user}
-                className={`contact ${
-                  selectedUser === user ? "active" : ""
-                }`}
-                onClick={() => setSelectedUser(user)}
-              >
-                <div className="avatar">
-                  {user[0].toUpperCase()}
-                </div>
+        <section className="user-list">
+          {users.map((user) => (
+            <button
+              key={user}
+              className={`user-item ${
+                selectedUser === user ? "selected-user" : ""
+              }`}
+              onClick={() => setSelectedUser(user)}
+            >
+              <span className="avatar">{user.charAt(0).toUpperCase()}</span>
 
-                <div>
-                  <strong>{user}</strong>
-                  <p>Registered user</p>
-                </div>
-              </button>
-            ))}
-          </div>
-
-          <button className="logout-button" onClick={logout}>
-            Logout
-          </button>
-        </aside>
-
-        <section className="chat-area">
-          <header className="chat-header">
-            <div className="avatar">
-              {selectedUser ? selectedUser[0].toUpperCase() : "?"}
-            </div>
-
-            <div>
-              <h2>{selectedUser || "Select a user"}</h2>
-              <p>
-                {selectedUser
-                  ? "Registered user"
-                  : "Choose a chat"}
-              </p>
-            </div>
-          </header>
-
-          <div className="messages">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`message ${
-                  message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()? "mine" : ""
-                }`}
-              >
-                <span>{message.text}</span>
-
-                <small>
-                  {new Date(message.sentAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </small>
-
-                {message.sender.trim().toLowerCase() === currentUser.trim().toLowerCase()&& (
-                  <button
-                    className="delete-button"
-                    onClick={() => deleteMessage(message.id)}
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
-            ))}
-
-            {selectedUser && messages.length === 0 && (
-              <p>No messages yet.</p>
-            )}
-
-            {error && (
-              <p className="error-message">{error}</p>
-            )}
-          </div>
-
-          <form className="message-form" onSubmit={sendMessage}>
-            <input
-              value={newMessage}
-              onChange={(event) => setNewMessage(event.target.value)}
-              placeholder={
-                selectedUser
-                  ? "Type a message..."
-                  : "Select a user first"
-              }
-              disabled={!selectedUser}
-            />
-
-            <button type="submit" disabled={!selectedUser}>
-              Send
+              <span>
+                <strong>{user}</strong>
+                <small>Registered user</small>
+              </span>
             </button>
-          </form>
+          ))}
         </section>
+
+        <button className="logout-button" onClick={logout}>
+          Logout
+        </button>
+      </aside>
+
+      <section className="chat-panel">
+        <header className="chat-header">
+          <span className="avatar">
+            {selectedUser ? selectedUser.charAt(0).toUpperCase() : "?"}
+          </span>
+
+          <div>
+            <h2>{selectedUser || "Select a user"}</h2>
+            <small>Registered user</small>
+          </div>
+        </header>
+
+        <section className="messages-area">
+          {messages.length === 0 ? (
+            <p>No messages yet.</p>
+          ) : (
+            messages.map((message) => {
+              const isMine =
+                message.sender?.trim().toLowerCase() ===
+                currentUser.trim().toLowerCase();
+
+              return (
+                <article
+                  key={message.id}
+                  className={`message ${isMine ? "my-message" : "other-message"}`}
+                >
+                  <p>{message.text}</p>
+                  <small>{formatTime(message.sentAt)}</small>
+
+                  {isMine && (
+                    <button onClick={() => deleteMessage(message.id)}>
+                      Delete
+                    </button>
+                  )}
+                </article>
+              );
+            })
+          )}
+
+          {messageError && <p className="error-message">{messageError}</p>}
+        </section>
+
+        <form className="message-form" onSubmit={sendMessage}>
+          <input
+            type="text"
+            placeholder="Type a message..."
+            value={newMessage}
+            onChange={(event) => setNewMessage(event.target.value)}
+            disabled={!selectedUser}
+          />
+
+          <button type="submit" disabled={!selectedUser}>
+            Send
+          </button>
+        </form>
       </section>
     </main>
   );
