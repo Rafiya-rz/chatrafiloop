@@ -13,13 +13,17 @@ input {
   font: inherit;
 }
 
+#root {
+  min-height: 100dvh;
+}
+
 .chat-app {
   width: min(1180px, calc(100% - 32px));
   height: min(820px, calc(100dvh - 48px));
   min-height: 600px;
   margin: 24px auto;
   display: grid;
-  grid-template-columns: 330px 1fr;
+  grid-template-columns: 330px minmax(0, 1fr);
   overflow: hidden;
   border-radius: 24px;
   background: white;
@@ -29,10 +33,10 @@ input {
 .sidebar {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   padding: 30px 22px;
   background: #27448c;
   color: white;
-  min-height: 0;
 }
 
 .sidebar h1 {
@@ -48,6 +52,7 @@ input {
 
 .user-list {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
@@ -97,7 +102,7 @@ input {
 }
 
 .logout-button {
-  margin-top: auto;
+  margin-top: 18px;
   padding: 12px;
   border: 1px solid #abc5ff;
   border-radius: 12px;
@@ -108,7 +113,7 @@ input {
 
 .chat-panel {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   background: #f7f9ff;
@@ -238,7 +243,7 @@ input {
     height: 100dvh;
     min-height: 0;
     margin: 0;
-    grid-template-columns: 112px 1fr;
+    grid-template-columns: 150px minmax(0, 1fr);
     border-radius: 0;
   }
 
@@ -247,7 +252,7 @@ input {
   }
 
   .sidebar h1 {
-    font-size: 16px;
+    font-size: 18px;
   }
 
   .sidebar > p {
@@ -256,13 +261,16 @@ input {
   }
 
   .user-item {
-    justify-content: center;
-    padding: 10px 4px;
+    gap: 8px;
+    padding: 10px 6px;
   }
 
-  .user-item strong,
+  .user-item strong {
+    font-size: 14px;
+  }
+
   .user-item small {
-    display: none;
+    font-size: 11px;
   }
 
   .avatar {
@@ -278,6 +286,7 @@ input {
   }
 
   .chat-header {
+    gap: 10px;
     padding: 16px;
   }
 
@@ -310,4 +319,66 @@ input {
   .message-form button {
     padding: 12px 14px;
   }
+
+  .error-message {
+    padding: 0 12px 8px;
+    font-size: 13px;
+  }
+}
+.notification-badge {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 20px;
+  background: #ffca3a;
+  color: #202020;
+  font-size: 12px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.auth-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background: #edf2ff;
+  padding: 20px;
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  padding: 36px;
+  border-radius: 22px;
+  background: white;
+  box-shadow: 0 18px 55px rgba(25, 52, 111, 0.18);
+}
+
+.auth-card input,
+.auth-card button {
+  width: 100%;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 12px;
+}
+
+.auth-card input {
+  border: 1px solid #cad7f4;
+}
+
+.auth-card button {
+  border: 0;
+  background: #3864dc;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.auth-switch {
+  margin-top: 16px !important;
+  background: transparent !important;
+  color: #3864dc !important;
+}
+
+.success-message {
+  color: #12834d;
 }
