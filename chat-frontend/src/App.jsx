@@ -5,18 +5,12 @@ const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:8081"
 ).replace(/\/$/, "");
 
-function normalize(value = "") {
-  return String(value).trim().toLowerCase();
-}
+const normalizeName = (value = "") => value.trim().toLowerCase();
 
 function formatTime(value) {
   if (!value) return "";
 
-  const dateValue = /[zZ]|[+-]\d{2}:\d{2}$/.test(value)
-    ? value
-    : `${value}Z`;
-
-  const date = new Date(dateValue);
+  const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
     return "";
@@ -28,30 +22,72 @@ function formatTime(value) {
   });
 }
 
-function App() {
+function sortMessages(list) {
+  return [...list].sort((first, second) => {
+    const firstTime = new Date(first.sentAt || 0).getTime();
+    const secondTime = new Date(second.sentAt || 0).getTime();
+
+    return firstTime - secondTime;
+  });
+}
+
+export default function App() {
   const [currentUser, setCurrentUser] = useState(
-    localStorage.getItem("connectChatUser") || ""
+    () => localStorage.getItem("connectChatUser") || ""
   );
-  const [users, setUsers] = useState([]);
-  const [selectedUser, setSelectedUser] = useState("");
-  const [messages, setMessages] = useState([]);
 
   const [authMode, setAuthMode] = useState("register");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
   const [authError, setAuthError] = useState("");
-  const [authInfo, setAuthInfo] = useState("");
 
+  const [users, setUsers] = useState([]);
+  const [selectedUser, setSelectedUser] = useState("");
+  const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [messageError, setMessageError] = useState("");
 
-  const messageEndRef = useRef(null);
+  const [unreadCounts, setUnreadCounts] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("connectChatUnread") || "{}");
+    } catch {
+      return {};
+    }
+  });
 
-  function getHeaders() {
+  const [toast, setToast] = useState(null);
+  const [browserAlertsEnabled, setBrowserAlertsEnabled] = useState(
+    () =>
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+  );
+
+  const knownMessageIds = useRef(new Set());
+  const inboxReady = useRef(false);
+  const selectedUserRef = useRef("");
+  const toastTimer = useRef(null);
+
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      "connectChatUnread",
+      JSON.stringify(unreadCounts)
+    );
+  }, [unreadCounts]);
+
+  useEffect(() => {
+    return () => clearTimeout(toastTimer.current);
+  }, []);
+
+  function getHeaders(includeJson = false) {
     const token = localStorage.getItem("connectChatToken");
 
     return {
-      "Content-Type": "application/json",
+      ...(includeJson ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
   }
@@ -59,71 +95,272 @@ function App() {
   function logout() {
     localStorage.removeItem("connectChatUser");
     localStorage.removeItem("connectChatToken");
+    localStorage.removeItem("connectChatUnread");
 
     setCurrentUser("");
     setUsers([]);
     setSelectedUser("");
     setMessages([]);
-    setUsername("");
-    setPassword("");
-    setAuthError("");
-    setAuthInfo("");
+    setUnreadCounts({});
+    setToast(null);
+
+    knownMessageIds.current = new Set();
+    inboxReady.current = false;
   }
 
-  async function handleRegister(event) {
-    event.preventDefault();
+  async function apiFetch(path, options = {}) {
+    const response = await fetch(`${API_URL}${path}`, options);
 
-    setAuthError("");
-    setAuthInfo("");
+    if (response.status === 401 || response.status === 403) {
+      logout();
+      throw new Error("Your login session ended. Please log in again.");
+    }
 
-    try {
-      const response = await fetch(`${API_URL}/users/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: username.trim(),
-          password,
-        }),
+    return response;
+  }
+
+  function showNewMessageAlert(sender, text) {
+    clearTimeout(toastTimer.current);
+
+    setToast({
+      sender,
+      text,
+    });
+
+    toastTimer.current = setTimeout(() => {
+      setToast(null);
+    }, 5000);
+
+    if (
+      document.visibilityState === "hidden" &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      new Notification(`New message from ${sender}`, {
+        body: text,
       });
-
-      const text = await response.text();
-
-      if (!response.ok) {
-        throw new Error(text || "Registration failed.");
-      }
-
-      setAuthInfo("Registration successful. Please log in.");
-      setAuthMode("login");
-      setPassword("");
-    } catch (error) {
-      setAuthError(error.message || "Cannot connect to the backend.");
     }
   }
 
-  async function handleLogin(event) {
+  async function loadUsers() {
+    const response = await apiFetch("/users", {
+      headers: getHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error("Could not load users.");
+    }
+
+    const data = await response.json();
+
+    const otherUsers = data.filter(
+      (user) => normalizeName(user) !== normalizeName(currentUser)
+    );
+
+    setUsers(otherUsers);
+
+    setSelectedUser((previousUser) => {
+      if (
+        previousUser &&
+        otherUsers.some(
+          (user) =>
+            normalizeName(user) === normalizeName(previousUser)
+        )
+      ) {
+        return previousUser;
+      }
+
+      return otherUsers[0] || "";
+    });
+  }
+
+  async function loadConversation(user = selectedUser) {
+    if (!currentUser || !user) {
+      setMessages([]);
+      return;
+    }
+
+    const response = await apiFetch(
+      `/messages/chat?firstUser=${encodeURIComponent(
+        currentUser
+      )}&secondUser=${encodeURIComponent(user)}`,
+      {
+        headers: getHeaders(),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error("Could not load messages.");
+    }
+
+    const data = await response.json();
+
+    data.forEach((message) => {
+      knownMessageIds.current.add(message.id);
+    });
+
+    setMessages(sortMessages(data));
+  }
+
+  async function checkForNewMessages() {
+    if (!currentUser) {
+      return;
+    }
+
+    try {
+      const response = await apiFetch("/messages", {
+        headers: getHeaders(),
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const allMessages = await response.json();
+
+      if (!inboxReady.current) {
+        allMessages.forEach((message) => {
+          knownMessageIds.current.add(message.id);
+        });
+
+        inboxReady.current = true;
+        return;
+      }
+
+      const newIncomingMessages = allMessages.filter((message) => {
+        const isNew = !knownMessageIds.current.has(message.id);
+
+        knownMessageIds.current.add(message.id);
+
+        return (
+          isNew &&
+          normalizeName(message.receiver) ===
+            normalizeName(currentUser) &&
+          normalizeName(message.sender) !==
+            normalizeName(currentUser)
+        );
+      });
+
+      if (newIncomingMessages.length === 0) {
+        return;
+      }
+
+      setUnreadCounts((previousCounts) => {
+        const nextCounts = { ...previousCounts };
+
+        newIncomingMessages.forEach((message) => {
+          const senderKey = normalizeName(message.sender);
+
+          if (
+            senderKey !== normalizeName(selectedUserRef.current)
+          ) {
+            nextCounts[senderKey] = (nextCounts[senderKey] || 0) + 1;
+          }
+        });
+
+        return nextCounts;
+      });
+
+      const lastMessage =
+        newIncomingMessages[newIncomingMessages.length - 1];
+
+      showNewMessageAlert(lastMessage.sender, lastMessage.text);
+
+      const selectedUserKey = normalizeName(selectedUserRef.current);
+
+      if (
+        newIncomingMessages.some(
+          (message) =>
+            normalizeName(message.sender) === selectedUserKey
+        )
+      ) {
+        loadConversation(selectedUserRef.current).catch(() => {});
+      }
+    } catch {
+      // The next check will try again.
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    loadUsers().catch((error) => {
+      setMessageError(error.message);
+    });
+
+    checkForNewMessages();
+
+    const intervalId = setInterval(checkForNewMessages, 2000);
+
+    return () => clearInterval(intervalId);
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser || !selectedUser) {
+      return;
+    }
+
+    loadConversation().catch((error) => {
+      setMessageError(error.message);
+    });
+  }, [currentUser, selectedUser]);
+
+  async function handleAuth(event) {
     event.preventDefault();
 
     setAuthError("");
-    setAuthInfo("");
+    setAuthMessage("");
+
+    if (!username.trim() || !password.trim()) {
+      setAuthError("Enter both username and password.");
+      return;
+    }
 
     try {
-      const response = await fetch(`${API_URL}/users/login`, {
+      const endpoint =
+        authMode === "register" ? "/users/register" : "/users/login";
+
+      const response = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           username: username.trim(),
           password,
         }),
       });
+
+      if (authMode === "register") {
+        const text = await response.text();
+
+        if (!response.ok) {
+          throw new Error(text || "Registration failed.");
+        }
+
+        setAuthMessage(
+          "Registration successful. Now click Login and use the same details."
+        );
+        setAuthMode("login");
+        setPassword("");
+        return;
+      }
 
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.error || "Login failed.");
+        throw new Error(
+          data.error || "Wrong username or password."
+        );
       }
 
       localStorage.setItem("connectChatUser", data.username);
       localStorage.setItem("connectChatToken", data.token);
+
+      knownMessageIds.current = new Set();
+      inboxReady.current = false;
 
       setCurrentUser(data.username);
       setUsername("");
@@ -133,101 +370,16 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    if (!currentUser) return;
+  function chooseUser(user) {
+    setSelectedUser(user);
+    setMessageError("");
 
-    async function loadUsers() {
-      try {
-        const response = await fetch(`${API_URL}/users`, {
-          headers: getHeaders(),
-        });
-
-        if (!response.ok) {
-          return;
-        }
-
-        const data = await response.json();
-
-        const otherUsers = data.filter(
-          (user) => normalize(user) !== normalize(currentUser)
-        );
-
-        setUsers(otherUsers);
-
-        setSelectedUser((oldUser) => {
-          if (otherUsers.includes(oldUser)) {
-            return oldUser;
-          }
-
-          return otherUsers[0] || "";
-        });
-      } catch {
-        // The next automatic refresh will try again.
-      }
-    }
-
-    loadUsers();
-
-    const timer = window.setInterval(loadUsers, 5000);
-
-    return () => window.clearInterval(timer);
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (!currentUser || !selectedUser) {
-      setMessages([]);
-      return;
-    }
-
-    let isActive = true;
-
-    async function loadMessages() {
-      try {
-        const url =
-          `${API_URL}/messages/chat?firstUser=${encodeURIComponent(currentUser)}` +
-          `&secondUser=${encodeURIComponent(selectedUser)}`;
-
-        const response = await fetch(url, {
-          headers: getHeaders(),
-        });
-
-        if (!response.ok) {
-          return;
-        }
-
-        const data = await response.json();
-
-        const sortedMessages = [...data].sort((first, second) => {
-          return new Date(first.sentAt) - new Date(second.sentAt);
-        });
-
-        if (isActive) {
-          setMessages(sortedMessages);
-          setMessageError("");
-        }
-      } catch {
-        if (isActive) {
-          setMessageError("Messages could not be loaded.");
-        }
-      }
-    }
-
-    loadMessages();
-
-    const timer = window.setInterval(loadMessages, 2000);
-
-    return () => {
-      isActive = false;
-      window.clearInterval(timer);
-    };
-  }, [currentUser, selectedUser]);
-
-  useEffect(() => {
-    messageEndRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "end",
+    setUnreadCounts((previousCounts) => {
+      const nextCounts = { ...previousCounts };
+      delete nextCounts[normalizeName(user)];
+      return nextCounts;
     });
-  }, [messages]);
+  }
 
   async function sendMessage(event) {
     event.preventDefault();
@@ -241,9 +393,9 @@ function App() {
     setMessageError("");
 
     try {
-      const response = await fetch(`${API_URL}/messages`, {
+      const response = await apiFetch("/messages", {
         method: "POST",
-        headers: getHeaders(),
+        headers: getHeaders(true),
         body: JSON.stringify({
           sender: currentUser,
           receiver: selectedUser,
@@ -251,31 +403,38 @@ function App() {
         }),
       });
 
-      const savedMessage = await response.json().catch(() => null);
-
-      if (!response.ok || !savedMessage) {
+      if (!response.ok) {
         throw new Error("Message could not be sent.");
       }
 
-      setMessages((oldMessages) => {
-        const alreadyExists = oldMessages.some(
-          (message) => message.id === savedMessage.id
-        );
+      const savedMessage = await response.json();
 
-        return alreadyExists
-          ? oldMessages
-          : [...oldMessages, savedMessage];
-      });
+      knownMessageIds.current.add(savedMessage.id);
+
+      setMessages((previousMessages) =>
+        sortMessages([
+          ...previousMessages.filter(
+            (message) => message.id !== savedMessage.id
+          ),
+          savedMessage,
+        ])
+      );
 
       setNewMessage("");
     } catch (error) {
-      setMessageError(error.message || "Message could not be sent.");
+      setMessageError(error.message);
     }
   }
 
   async function deleteMessage(messageId) {
+    if (!window.confirm("Delete this message?")) {
+      return;
+    }
+
+    setMessageError("");
+
     try {
-      const response = await fetch(`${API_URL}/messages/${messageId}`, {
+      const response = await apiFetch(`/messages/${messageId}`, {
         method: "DELETE",
         headers: getHeaders(),
       });
@@ -284,11 +443,30 @@ function App() {
         throw new Error("Message could not be deleted.");
       }
 
-      setMessages((oldMessages) =>
-        oldMessages.filter((message) => message.id !== messageId)
+      setMessages((previousMessages) =>
+        previousMessages.filter(
+          (message) => message.id !== messageId
+        )
       );
     } catch (error) {
-      setMessageError(error.message || "Message could not be deleted.");
+      setMessageError(error.message);
+    }
+  }
+
+  async function enableBrowserAlerts() {
+    if (!("Notification" in window)) {
+      setMessageError("This browser does not support pop-up alerts.");
+      return;
+    }
+
+    const permission = await Notification.requestPermission();
+
+    setBrowserAlertsEnabled(permission === "granted");
+
+    if (permission !== "granted") {
+      setMessageError(
+        "Notification permission was not allowed."
+      );
     }
   }
 
@@ -297,24 +475,30 @@ function App() {
       <main className="auth-page">
         <section className="auth-card">
           <h1>ConnectChat</h1>
-          <p>{authMode === "register" ? "Create your account" : "Welcome back"}</p>
 
-          <form
-            onSubmit={authMode === "register" ? handleRegister : handleLogin}
-          >
+          <p>
+            {authMode === "register"
+              ? "Create your account"
+              : "Log in to continue"}
+          </p>
+
+          <form onSubmit={handleAuth}>
             <input
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
+              type="text"
               placeholder="Username"
-              required
+              value={username}
+              onChange={(event) =>
+                setUsername(event.target.value)
+              }
             />
 
             <input
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Password"
               type="password"
-              required
+              placeholder="Password"
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
             />
 
             <button type="submit">
@@ -322,16 +506,23 @@ function App() {
             </button>
           </form>
 
-          {authError && <p className="auth-error">{authError}</p>}
-          {authInfo && <p className="auth-info">{authInfo}</p>}
+          {authMessage && (
+            <p className="success-message">{authMessage}</p>
+          )}
+
+          {authError && (
+            <p className="error-message">{authError}</p>
+          )}
 
           <button
             type="button"
             className="auth-link"
             onClick={() => {
-              setAuthMode(authMode === "register" ? "login" : "register");
+              setAuthMode(
+                authMode === "register" ? "login" : "register"
+              );
               setAuthError("");
-              setAuthInfo("");
+              setAuthMessage("");
             }}
           >
             {authMode === "register"
@@ -346,104 +537,159 @@ function App() {
   return (
     <main className="chat-app">
       <aside className="sidebar">
-        <div>
-          <h1>ConnectChat</h1>
-          <p>Logged in as {currentUser}</p>
-        </div>
+        <h1>ConnectChat</h1>
+        <p>Logged in as {currentUser}</p>
 
-        <div className="user-list">
-          {users.map((user) => (
-            <button
-              type="button"
-              key={user}
-              className={
-                selectedUser === user
-                  ? "user-item selected-user"
-                  : "user-item"
-              }
-              onClick={() => setSelectedUser(user)}
-            >
-              <span className="avatar">{user.charAt(0).toUpperCase()}</span>
+        <section className="user-list">
+          {users.length === 0 ? (
+            <p>No other users yet.</p>
+          ) : (
+            users.map((user) => {
+              const unreadCount =
+                unreadCounts[normalizeName(user)] || 0;
 
-              <span className="user-details">
-                <strong>{user}</strong>
-                <small>Registered user</small>
-              </span>
-            </button>
-          ))}
-        </div>
+              return (
+                <button
+                  type="button"
+                  key={user}
+                  className={`user-item ${
+                    normalizeName(user) ===
+                    normalizeName(selectedUser)
+                      ? "selected-user"
+                      : ""
+                  }`}
+                  onClick={() => chooseUser(user)}
+                >
+                  <span className="avatar">
+                    {user.charAt(0).toUpperCase()}
+                  </span>
 
-        <button type="button" className="logout-button" onClick={logout}>
+                  <span>
+                    <strong>{user}</strong>
+                    <small>Registered user</small>
+                  </span>
+
+                  {unreadCount > 0 && (
+                    <span className="unread-badge">
+                      {unreadCount > 9 ? "9+" : unreadCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </section>
+
+        <button
+          type="button"
+          className="logout-button"
+          onClick={logout}
+        >
           Logout
         </button>
       </aside>
 
       <section className="chat-panel">
         <header className="chat-header">
-          <span className="avatar">
-            {selectedUser ? selectedUser.charAt(0).toUpperCase() : "?"}
-          </span>
+          {selectedUser ? (
+            <>
+              <span className="avatar">
+                {selectedUser.charAt(0).toUpperCase()}
+              </span>
 
-          <div>
-            <h2>{selectedUser || "Choose a user"}</h2>
-            <small>{selectedUser ? "Registered user" : "Select a person to chat"}</small>
-          </div>
+              <div>
+                <h2>{selectedUser}</h2>
+                <small>Registered user</small>
+              </div>
+
+              <button
+                type="button"
+                className="alerts-button"
+                onClick={enableBrowserAlerts}
+              >
+                {browserAlertsEnabled
+                  ? "Alerts on"
+                  : "Enable alerts"}
+              </button>
+            </>
+          ) : (
+            <h2>Select a user to begin</h2>
+          )}
         </header>
 
         <section className="messages-area">
-          {!selectedUser && <p>Select a user from the left side.</p>}
-
-          {selectedUser && messages.length === 0 && (
+          {!selectedUser ? (
+            <p>Select a user from the left side.</p>
+          ) : messages.length === 0 ? (
             <p>No messages yet.</p>
+          ) : (
+            messages.map((message) => {
+              const isMine =
+                normalizeName(message.sender) ===
+                normalizeName(currentUser);
+
+              return (
+                <article
+                  key={message.id}
+                  className={
+                    isMine
+                      ? "message my-message"
+                      : "message other-message"
+                  }
+                >
+                  <p>{message.text}</p>
+                  <small>{formatTime(message.sentAt)}</small>
+
+                  {isMine && (
+                    <button
+                      type="button"
+                      className="delete-button"
+                      onClick={() => deleteMessage(message.id)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </article>
+              );
+            })
           )}
-
-          {messages.map((message) => {
-            const isMine =
-              normalize(message.sender) === normalize(currentUser);
-
-            return (
-              <article
-                key={message.id}
-                className={isMine ? "message my-message" : "message other-message"}
-              >
-                <p>{message.text}</p>
-                <small>{formatTime(message.sentAt)}</small>
-
-                {isMine && (
-                  <button
-                    type="button"
-                    className="delete-button"
-                    onClick={() => deleteMessage(message.id)}
-                  >
-                    Delete
-                  </button>
-                )}
-              </article>
-            );
-          })}
-
-          <div ref={messageEndRef} />
         </section>
 
-        {messageError && <p className="error-message">{messageError}</p>}
+        {messageError && (
+          <p className="error-message">{messageError}</p>
+        )}
 
         <form className="message-form" onSubmit={sendMessage}>
           <input
-            value={newMessage}
-            onChange={(event) => setNewMessage(event.target.value)}
+            type="text"
             placeholder={
-              selectedUser ? "Type a message..." : "Select a user first"
+              selectedUser
+                ? "Type a message..."
+                : "Select a user first"
+            }
+            value={newMessage}
+            onChange={(event) =>
+              setNewMessage(event.target.value)
             }
             disabled={!selectedUser}
           />
 
-          <button type="submit" disabled={!selectedUser || !newMessage.trim()}>
+          <button type="submit" disabled={!selectedUser}>
             Send
           </button>
         </form>
       </section>
+
+      {toast && (
+        <button
+          type="button"
+          className="message-toast"
+          onClick={() => chooseUser(toast.sender)}
+        >
+          <strong>New message from {toast.sender}</strong>
+          <span>{toast.text}</span>
+        </button>
+      )}
     </main>
   );
 }
-
-export default App;
