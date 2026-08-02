@@ -21,13 +21,15 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState({});
 
+  
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState("");
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [messageError, setMessageError] = useState("");
-  const [unreadCount, setUnreadCount] = useState(0);
+  
 
   const knownMessageIds = useRef(new Set());
   const firstMessagesLoad = useRef(true);
@@ -96,60 +98,52 @@ function App() {
     }
   }
 
-  async function loadMessages() {
-    if (!token || !currentUser || !selectedUser) return;
+ async function loadMessages() {
+  if (!currentUser || !selectedUser) return;
 
-    try {
-      const response = await fetch(
-        `${API_URL}/messages/chat?firstUser=${encodeURIComponent(
-          currentUser
-        )}&secondUser=${encodeURIComponent(selectedUser)}`,
-        {
-          headers: authHeaders(),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Could not load messages.");
+  try {
+    const response = await fetch(
+      `${API_URL}/messages/chat?firstUser=${encodeURIComponent(
+        currentUser
+      )}&secondUser=${encodeURIComponent(selectedUser)}`,
+      {
+        headers: getAuthHeaders(),
       }
+    );
 
-      const data = await response.json();
-
-      const orderedMessages = [...data].sort(
-        (first, second) =>
-          new Date(first.sentAt) - new Date(second.sentAt)
-      );
-
-      if (!firstMessagesLoad.current) {
-        const newIncomingMessages = orderedMessages.filter(
-          (message) =>
-            !knownMessageIds.current.has(String(message.id)) &&
-            normalise(message.sender) !== normalise(currentUser)
-        );
-
-        if (newIncomingMessages.length > 0) {
-          setUnreadCount((count) => count + newIncomingMessages.length);
-
-          if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("ConnectChat", {
-              body: "You received a new message.",
-            });
-          }
-        }
-      }
-
-      knownMessageIds.current = new Set(
-        orderedMessages.map((message) => String(message.id))
-      );
-
-      firstMessagesLoad.current = false;
-      setMessages(orderedMessages);
-      setMessageError("");
-    } catch {
-      setMessageError("Could not load messages.");
+    if (!response.ok) {
+      throw new Error("Could not load messages.");
     }
-  }
 
+    const data = await response.json();
+
+    const newIncomingMessages = data.filter(
+      (message) =>
+        !knownMessageIds.current.has(message.id) &&
+        message.receiver?.trim().toLowerCase() ===
+          currentUser.trim().toLowerCase()
+    );
+
+    if (!firstMessageLoad.current && newIncomingMessages.length > 0) {
+      setUnreadCounts((oldCounts) => ({
+        ...oldCounts,
+        [selectedUser]: (oldCounts[selectedUser] || 0) + newIncomingMessages.length,
+      }));
+
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(`New message from ${selectedUser}`, {
+          body: newIncomingMessages[newIncomingMessages.length - 1].text,
+        });
+      }
+    }
+
+    knownMessageIds.current = new Set(data.map((message) => message.id));
+    firstMessageLoad.current = false;
+    setMessages(data);
+  } catch (error) {
+    setMessageError("Could not load messages.");
+  }
+}
   useEffect(() => {
     if (token && currentUser) {
       loadUsers();
@@ -157,19 +151,17 @@ function App() {
   }, [token, currentUser]);
 
   useEffect(() => {
-    if (!token || !currentUser || !selectedUser) return;
+  if (!currentUser || !selectedUser) return;
 
-    knownMessageIds.current = new Set();
-    firstMessagesLoad.current = true;
-    setMessages([]);
-    setUnreadCount(0);
+  knownMessageIds.current = new Set();
+  firstMessageLoad.current = true;
 
-    loadMessages();
+  loadMessages();
 
-    const intervalId = setInterval(loadMessages, 2000);
+  const timer = setInterval(loadMessages, 2000);
 
-    return () => clearInterval(intervalId);
-  }, [token, currentUser, selectedUser]);
+  return () => clearInterval(timer);
+}, [currentUser, selectedUser]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
@@ -421,8 +413,14 @@ function App() {
                   ? "selected-user"
                   : ""
               }`}
-              onClick={() => setSelectedUser(user)}
-            >
+              
+            >onClick={() => {
+  setSelectedUser(user);
+  setUnreadCounts((oldCounts) => ({
+    ...oldCounts,
+    [user]: 0,
+  }));
+}}
               <span className="avatar">
                 {user.charAt(0).toUpperCase()}
               </span>
@@ -437,6 +435,12 @@ function App() {
                   <span className="notification-badge">
                     {unreadCount}
                   </span>
+                 
+                )}
+                {unreadCounts[user] > 0 && (
+                   <span className="notification-badge">
+                    {unreadCounts[user] > 9 ? "9+" : unreadCounts[user]}
+                   </span>
                 )}
             </button>
           ))}
