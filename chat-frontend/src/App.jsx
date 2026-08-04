@@ -1,34 +1,40 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8081").replace(
-  /\/$/,
-  ""
-);
+const API_URL = (
+  import.meta.env.VITE_API_URL || "http://localhost:8081"
+).replace(/\/$/, "");
 
-function sameUser(first, second) {
-  return String(first || "").trim().toLowerCase() ===
-    String(second || "").trim().toLowerCase();
+function normalize(value = "") {
+  return String(value).trim().toLowerCase();
 }
 
-function messageKey(message) {
-  return String(message.id ?? `${message.sender}-${message.receiver}-${message.sentAt}-${message.text}`);
+function sameUser(first, second) {
+  return normalize(first) === normalize(second);
+}
+
+function messageId(message) {
+  return (
+    message.id ??
+    `${message.sender}-${message.receiver}-${message.text}-${message.sentAt}`
+  );
 }
 
 function sortMessages(list) {
   return [...list].sort(
     (first, second) =>
-      new Date(first.sentAt || 0).getTime() - new Date(second.sentAt || 0).getTime()
+      new Date(first.sentAt).getTime() - new Date(second.sentAt).getTime()
   );
 }
 
 function formatTime(value) {
   if (!value) return "";
 
-  const text = String(value);
-  const date = new Date(
-    text.endsWith("Z") || text.includes("+") ? text : `${text}Z`
-  );
+  // Spring Boot may send a date without timezone.
+  const safeValue =
+    /Z$|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`;
+
+  const date = new Date(safeValue);
 
   if (Number.isNaN(date.getTime())) return "";
 
@@ -38,14 +44,13 @@ function formatTime(value) {
   });
 }
 
-async function readResponse(response) {
-  const text = await response.text();
-
-  try {
-    return text ? JSON.parse(text) : null;
-  } catch {
-    return text;
-  }
+function isConversation(message, firstUser, secondUser) {
+  return (
+    (sameUser(message.sender, firstUser) &&
+      sameUser(message.receiver, secondUser)) ||
+    (sameUser(message.sender, secondUser) &&
+      sameUser(message.receiver, firstUser))
+  );
 }
 
 export default function App() {
@@ -59,211 +64,148 @@ export default function App() {
   const [authMode, setAuthMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [authMessage, setAuthMessage] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
 
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [allMessages, setAllMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [messageError, setMessageError] = useState("");
-
-  const [unreadCounts, setUnreadCounts] = useState({});
-  const [popup, setPopup] = useState("");
-  const [alertsEnabled, setAlertsEnabled] = useState(false);
+  const [unread, setUnread] = useState({});
+  const [popup, setPopup] = useState(null);
 
   const knownMessageIds = useRef(new Set());
-  const historyLoaded = useRef(false);
-  const popupTimer = useRef(null);
-  const messagesEndRef = useRef(null);
+  const firstMessageLoad = useRef(true);
+  const currentUserRef = useRef("");
+  const selectedUserRef = useRef("");
 
-  function getHeaders(json = false) {
-    const headers = {};
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
-    if (json) {
-      headers["Content-Type"] = "application/json";
-    }
+  useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
 
-    const savedToken = token || localStorage.getItem("connectChatToken");
-
-    if (savedToken) {
-      headers.Authorization = `Bearer ${savedToken}`;
-    }
-
-    return headers;
+  function getAuthHeaders() {
+    return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  function showPopup(text) {
-    setPopup(text);
+  async function readResponse(response) {
+    const text = await response.text();
 
-    clearTimeout(popupTimer.current);
-    popupTimer.current = setTimeout(() => {
-      setPopup("");
-    }, 4000);
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch {
+      return text;
+    }
   }
 
   async function loadUsers() {
-    try {
-      const response = await fetch(`${API_URL}/users`, {
-        headers: getHeaders(),
-      });
+    const response = await fetch(`${API_URL}/users`, {
+      headers: getAuthHeaders(),
+    });
 
-      if (!response.ok) return;
+    if (!response.ok) {
+      throw new Error("Could not load users.");
+    }
 
-      const data = await readResponse(response);
-      const userList = Array.isArray(data) ? data : [];
+    const data = await readResponse(response);
+    const userList = Array.isArray(data) ? data : [];
 
-      const otherUsers = userList.filter((user) => !sameUser(user, currentUser));
-      setUsers(otherUsers);
+    const otherUsers = userList.filter(
+      (user) => !sameUser(user, currentUserRef.current)
+    );
 
-      if (!selectedUser && otherUsers.length > 0) {
-        setSelectedUser(otherUsers[0]);
-      }
-    } catch {
-      // The next refresh will try again.
+    setUsers(otherUsers);
+
+    if (
+      !selectedUserRef.current ||
+      !otherUsers.some((user) => sameUser(user, selectedUserRef.current))
+    ) {
+      setSelectedUser(otherUsers[0] || "");
     }
   }
 
-  async function loadConversation() {
-    if (!currentUser || !selectedUser) {
-      setMessages([]);
+  async function refreshMessages() {
+    const response = await fetch(`${API_URL}/messages`, {
+      headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
       return;
     }
 
-    try {
-      const response = await fetch(
-        `${API_URL}/messages/chat?firstUser=${encodeURIComponent(
-          currentUser
-        )}&secondUser=${encodeURIComponent(selectedUser)}`,
-        {
-          headers: getHeaders(),
-        }
-      );
+    const data = await readResponse(response);
+    const receivedMessages = Array.isArray(data) ? sortMessages(data) : [];
 
-      if (!response.ok) return;
+    const isFirstLoad = firstMessageLoad.current;
 
-      const data = await readResponse(response);
-      const conversation = Array.isArray(data) ? data : [];
+    receivedMessages.forEach((message) => {
+      const id = messageId(message);
 
-      conversation.forEach((message) => {
-        knownMessageIds.current.add(messageKey(message));
-      });
-
-      setMessages(sortMessages(conversation));
-    } catch {
-      setMessageError("Cannot load messages right now.");
-    }
-  }
-
-  async function checkNewMessages() {
-    if (!currentUser) return;
-
-    try {
-      const response = await fetch(`${API_URL}/messages`, {
-        headers: getHeaders(),
-      });
-
-      if (!response.ok) return;
-
-      const data = await readResponse(response);
-      const allMessages = Array.isArray(data) ? data : [];
-
-      if (!historyLoaded.current) {
-        allMessages.forEach((message) => {
-          knownMessageIds.current.add(messageKey(message));
-        });
-
-        historyLoaded.current = true;
+      if (knownMessageIds.current.has(id)) {
         return;
       }
 
-      allMessages.forEach((message) => {
-        const id = messageKey(message);
+      knownMessageIds.current.add(id);
 
-        if (knownMessageIds.current.has(id)) return;
+      const receivedForMe =
+        sameUser(message.receiver, currentUserRef.current) &&
+        !sameUser(message.sender, currentUserRef.current);
 
-        knownMessageIds.current.add(id);
+      if (!isFirstLoad && receivedForMe) {
+        const sender = message.sender;
 
-        const isIncoming = sameUser(message.receiver, currentUser);
+        setPopup({
+          sender,
+          text: message.text,
+        });
 
-        if (!isIncoming) return;
-
-        if (sameUser(message.sender, selectedUser)) {
-          setMessages((oldMessages) => sortMessages([...oldMessages, message]));
-        } else {
-          setUnreadCounts((oldCounts) => ({
-            ...oldCounts,
-            [message.sender]: (oldCounts[message.sender] || 0) + 1,
+        if (!sameUser(sender, selectedUserRef.current)) {
+          setUnread((previous) => ({
+            ...previous,
+            [sender]: (previous[sender] || 0) + 1,
           }));
         }
 
-        showPopup(`New message from ${message.sender}`);
-
-        if (
-          alertsEnabled &&
-          "Notification" in window &&
-          Notification.permission === "granted"
-        ) {
-          new Notification(`ConnectChat: ${message.sender}`, {
+        if (Notification.permission === "granted") {
+          new Notification(`New message from ${sender}`, {
             body: message.text,
           });
         }
-      });
-    } catch {
-      // Poll again later.
-    }
+      }
+    });
+
+    firstMessageLoad.current = false;
+    setAllMessages(receivedMessages);
   }
-
-  useEffect(() => {
-    if (!currentUser || !token) return;
-
-    knownMessageIds.current = new Set();
-    historyLoaded.current = false;
-    setUnreadCounts({});
-
-    loadUsers();
-    checkNewMessages();
-
-    const timer = setInterval(checkNewMessages, 2000);
-
-    return () => clearInterval(timer);
-  }, [currentUser, token, selectedUser]);
-
-  useEffect(() => {
-    if (!currentUser || !selectedUser) return;
-
-    setUnreadCounts((oldCounts) => ({
-      ...oldCounts,
-      [selectedUser]: 0,
-    }));
-
-    loadConversation();
-  }, [selectedUser, currentUser]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   async function handleAuth(event) {
     event.preventDefault();
 
-    const cleanUsername = username.trim();
-
-    if (!cleanUsername || !password) {
-      setAuthMessage("Enter both username and password.");
+    if (!username.trim() || !password.trim()) {
+      setAuthError("Enter both username and password.");
       return;
     }
 
+    setAuthBusy(true);
+    setAuthError("");
     setAuthMessage("");
 
     try {
       const endpoint =
-        authMode === "register" ? "/users/register" : "/users/login";
+        authMode === "login" ? "/users/login" : "/users/register";
 
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
-        headers: getHeaders(true),
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
-          username: cleanUsername,
+          username: username.trim(),
           password,
         }),
       });
@@ -271,124 +213,116 @@ export default function App() {
       const data = await readResponse(response);
 
       if (!response.ok) {
-        const error =
-          typeof data === "object" && data?.error
-            ? data.error
-            : typeof data === "string"
-              ? data
-              : "Request failed.";
+        const errorText =
+          typeof data === "string"
+            ? data
+            : data?.error || "Request failed. Please try again.";
 
-        setAuthMessage(error);
-        return;
+        throw new Error(errorText);
       }
 
       if (authMode === "register") {
-        setAuthMessage("Registration successful. Now click Login.");
+        setAuthMessage("Account created. Now log in.");
         setAuthMode("login");
+        setPassword("");
         return;
       }
 
       if (!data?.token || !data?.username) {
-        setAuthMessage("Login response is not correct.");
-        return;
+        throw new Error("Login failed. Please check your username and password.");
       }
 
       localStorage.setItem("connectChatUser", data.username);
       localStorage.setItem("connectChatToken", data.token);
 
+      knownMessageIds.current = new Set();
+      firstMessageLoad.current = true;
+
       setCurrentUser(data.username);
       setToken(data.token);
-      setUsername("");
       setPassword("");
-      setAuthMessage("");
-    } catch {
-      setAuthMessage("Cannot connect to the backend.");
+    } catch (error) {
+      setAuthError(error.message || "Cannot connect to the backend.");
+    } finally {
+      setAuthBusy(false);
     }
   }
 
-  async function handleSend(event) {
+  function chooseUser(user) {
+    setSelectedUser(user);
+    setUnread((previous) => ({
+      ...previous,
+      [user]: 0,
+    }));
+  }
+
+  async function sendMessage(event) {
     event.preventDefault();
 
-    const text = newMessage.trim();
-
-    if (!text || !selectedUser) return;
+    if (!selectedUser || !newMessage.trim()) {
+      return;
+    }
 
     setMessageError("");
 
     try {
       const response = await fetch(`${API_URL}/messages`, {
         method: "POST",
-        headers: getHeaders(true),
+        headers: {
+          "Content-Type": "application/json",
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           sender: currentUser,
           receiver: selectedUser,
-          text,
+          text: newMessage.trim(),
         }),
       });
 
       const data = await readResponse(response);
 
       if (!response.ok) {
-        setMessageError(
-          typeof data === "string" ? data : "Message could not be sent."
+        throw new Error(
+          typeof data === "string"
+            ? data
+            : data?.error || "Could not send message."
         );
-        return;
       }
 
-      if (data && typeof data === "object") {
-        knownMessageIds.current.add(messageKey(data));
-        setMessages((oldMessages) => sortMessages([...oldMessages, data]));
-      }
+      knownMessageIds.current.add(messageId(data));
+
+      setAllMessages((previous) =>
+        sortMessages([
+          ...previous.filter((message) => messageId(message) !== messageId(data)),
+          data,
+        ])
+      );
 
       setNewMessage("");
-    } catch {
-      setMessageError("Message could not be sent.");
+    } catch (error) {
+      setMessageError(error.message || "Could not send message.");
     }
   }
 
   async function deleteMessage(id) {
+    setMessageError("");
+
     try {
       const response = await fetch(`${API_URL}/messages/${id}`, {
         method: "DELETE",
-        headers: getHeaders(),
+        headers: getAuthHeaders(),
       });
 
       if (!response.ok) {
-        setMessageError("Message could not be deleted.");
-        return;
+        throw new Error("Message could not be deleted.");
       }
 
-      setMessages((oldMessages) =>
-        oldMessages.filter((message) => String(message.id) !== String(id))
+      setAllMessages((previous) =>
+        previous.filter((message) => message.id !== id)
       );
-    } catch {
-      setMessageError("Message could not be deleted.");
+    } catch (error) {
+      setMessageError(error.message || "Message could not be deleted.");
     }
-  }
-
-  async function enableAlerts() {
-    if (!("Notification" in window)) {
-      showPopup("This browser does not support notifications.");
-      return;
-    }
-
-    const permission = await Notification.requestPermission();
-    setAlertsEnabled(permission === "granted");
-
-    showPopup(
-      permission === "granted"
-        ? "Notifications enabled."
-        : "Notifications were not allowed."
-    );
-  }
-
-  function chooseUser(user) {
-    setSelectedUser(user);
-
-    setUnreadCounts((oldCounts) => ({
-      ...oldCounts,
-      [user]: 0,
-    }));
   }
 
   function logout() {
@@ -399,56 +333,102 @@ export default function App() {
     setToken("");
     setUsers([]);
     setSelectedUser("");
-    setMessages([]);
-    setUnreadCounts({});
+    setAllMessages([]);
+    setUnread({});
+    setPopup(null);
+    setUsername("");
+    setPassword("");
     setAuthMode("login");
   }
 
+  function enableBrowserAlerts() {
+    if ("Notification" in window) {
+      Notification.requestPermission();
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUser || !token) {
+      return;
+    }
+
+    loadUsers().catch(() => {
+      setMessageError("Could not load users.");
+    });
+
+    refreshMessages().catch(() => {
+      setMessageError("Could not load messages.");
+    });
+
+    const interval = setInterval(() => {
+      refreshMessages().catch(() => {});
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [currentUser, token]);
+
+  useEffect(() => {
+    if (!popup) {
+      return;
+    }
+
+    const timeout = setTimeout(() => setPopup(null), 4500);
+
+    return () => clearTimeout(timeout);
+  }, [popup]);
+
+  const messages = selectedUser
+    ? sortMessages(
+        allMessages.filter((message) =>
+          isConversation(message, currentUser, selectedUser)
+        )
+      )
+    : [];
+
   if (!currentUser || !token) {
+    const isLogin = authMode === "login";
+
     return (
       <main className="auth-page">
         <form className="auth-card" onSubmit={handleAuth}>
           <h1>ConnectChat</h1>
-          <p>
-            {authMode === "register"
-              ? "Create your account"
-              : "Log in to continue"}
-          </p>
+          <p>{isLogin ? "Log in to continue" : "Create your account"}</p>
 
           <input
+            type="text"
+            placeholder="Username"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            placeholder="Username"
             autoComplete="username"
           />
 
           <input
             type="password"
+            placeholder="Password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder="Password"
-            autoComplete={
-              authMode === "register" ? "new-password" : "current-password"
-            }
+            autoComplete={isLogin ? "current-password" : "new-password"}
           />
 
-          <button type="submit">
-            {authMode === "register" ? "Register" : "Login"}
+          <button type="submit" disabled={authBusy}>
+            {authBusy ? "Please wait..." : isLogin ? "Login" : "Register"}
           </button>
 
-          {authMessage && <p className="error-message">{authMessage}</p>}
+          {authError && <p className="auth-error">{authError}</p>}
+          {authMessage && <p className="auth-success">{authMessage}</p>}
 
           <button
             type="button"
-            className="auth-switch"
+            className="switch-button"
             onClick={() => {
-              setAuthMode(authMode === "register" ? "login" : "register");
+              setAuthMode(isLogin ? "register" : "login");
+              setAuthError("");
               setAuthMessage("");
             }}
           >
-            {authMode === "register"
-              ? "Already have an account? Login"
-              : "Need an account? Register"}
+            {isLogin
+              ? "Need an account? Register"
+              : "Already have an account? Login"}
           </button>
         </form>
       </main>
@@ -458,38 +438,43 @@ export default function App() {
   return (
     <main className="chat-app">
       <aside className="sidebar">
-        <h1>ConnectChat</h1>
-        <p>Logged in as {currentUser}</p>
+        <div className="sidebar-brand">
+          <h1>ConnectChat</h1>
+          <p>Logged in as {currentUser}</p>
+        </div>
 
-        <section className="user-list">
-          {users.map((user) => {
-            const unread = unreadCounts[user] || 0;
+        <div className="user-list">
+          {users.length === 0 && (
+            <p className="empty-users">No other users yet.</p>
+          )}
 
-            return (
-              <button
-                type="button"
-                key={user}
-                className={`user-item ${
-                  sameUser(user, selectedUser) ? "selected-user" : ""
-                }`}
-                onClick={() => chooseUser(user)}
-              >
-                <span className="avatar">
-                  {user.charAt(0).toUpperCase()}
-                </span>
+          {users.map((user) => (
+            <button
+              key={user}
+              className={`user-item ${
+                sameUser(user, selectedUser) ? "selected-user" : ""
+              }`}
+              onClick={() => chooseUser(user)}
+            >
+              <span className="avatar">{user.charAt(0).toUpperCase()}</span>
 
-                <span className="user-details">
-                  <strong>{user}</strong>
-                  <small>Online</small>
-                </span>
+              <span className="user-details">
+                <strong>{user}</strong>
+                <small>Registered user</small>
+              </span>
 
-                {unread > 0 && <span className="unread-badge">{unread}</span>}
-              </button>
-            );
-          })}
-        </section>
+              {unread[user] > 0 && (
+                <span className="unread-badge">{unread[user]}</span>
+              )}
+            </button>
+          ))}
+        </div>
 
-        <button type="button" className="logout-button" onClick={logout}>
+        <button className="alert-button" onClick={enableBrowserAlerts}>
+          Enable alerts
+        </button>
+
+        <button className="logout-button" onClick={logout}>
           Logout
         </button>
       </aside>
@@ -503,63 +488,50 @@ export default function App() {
               </span>
               <div>
                 <h2>{selectedUser}</h2>
-                <small>Online</small>
+                <small>Registered user</small>
               </div>
             </>
           ) : (
             <h2>Select a user</h2>
           )}
-
-          <button
-            type="button"
-            className="alerts-button"
-            onClick={enableAlerts}
-          >
-            {alertsEnabled ? "Alerts enabled" : "Enable alerts"}
-          </button>
         </header>
 
         <section className="messages-area">
-          {popup && <div className="message-popup">{popup}</div>}
+          {messages.length === 0 ? (
+            <p className="no-messages">No messages yet.</p>
+          ) : (
+            messages.map((message) => {
+              const isMine = sameUser(message.sender, currentUser);
 
-          {!selectedUser && <p>Select a user to start chatting.</p>}
+              return (
+                <article
+                  className={`message ${
+                    isMine ? "my-message" : "other-message"
+                  }`}
+                  key={messageId(message)}
+                >
+                  <p>{message.text}</p>
+                  <small>{formatTime(message.sentAt)}</small>
 
-          {selectedUser && messages.length === 0 && (
-            <p>No messages yet.</p>
+                  {isMine && (
+                    <button
+                      className="delete-button"
+                      onClick={() => deleteMessage(message.id)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </article>
+              );
+            })
           )}
 
-          {messages.map((message) => {
-            const isMine = sameUser(message.sender, currentUser);
-
-            return (
-              <article
-                key={messageKey(message)}
-                className={`message ${
-                  isMine ? "my-message" : "other-message"
-                }`}
-              >
-                <p>{message.text}</p>
-                <small>{formatTime(message.sentAt)}</small>
-
-                {isMine && (
-                  <button
-                    type="button"
-                    className="delete-button"
-                    onClick={() => deleteMessage(message.id)}
-                  >
-                    Delete
-                  </button>
-                )}
-              </article>
-            );
-          })}
-
-          <div ref={messagesEndRef} />
+          {messageError && (
+            <p className="error-message">{messageError}</p>
+          )}
         </section>
 
-        {messageError && <p className="error-message">{messageError}</p>}
-
-        <form className="message-form" onSubmit={handleSend}>
+        <form className="message-form" onSubmit={sendMessage}>
           <input
             value={newMessage}
             onChange={(event) => setNewMessage(event.target.value)}
@@ -574,6 +546,19 @@ export default function App() {
           </button>
         </form>
       </section>
+
+      {popup && (
+        <button
+          className="message-popup"
+          onClick={() => {
+            chooseUser(popup.sender);
+            setPopup(null);
+          }}
+        >
+          <strong>New message from {popup.sender}</strong>
+          <span>{popup.text}</span>
+        </button>
+      )}
     </main>
   );
 }
