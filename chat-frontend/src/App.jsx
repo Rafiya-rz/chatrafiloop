@@ -1,20 +1,36 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const API_URL = (
-  import.meta.env.VITE_API_URL || "http://localhost:8081"
-).replace(/\/$/, "");
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8081").replace(
+  /\/$/,
+  ""
+);
 
-const normalizeName = (value = "") => value.trim().toLowerCase();
+function sameUser(first, second) {
+  return String(first || "").trim().toLowerCase() ===
+    String(second || "").trim().toLowerCase();
+}
+
+function messageKey(message) {
+  return String(message.id ?? `${message.sender}-${message.receiver}-${message.sentAt}-${message.text}`);
+}
+
+function sortMessages(list) {
+  return [...list].sort(
+    (first, second) =>
+      new Date(first.sentAt || 0).getTime() - new Date(second.sentAt || 0).getTime()
+  );
+}
 
 function formatTime(value) {
   if (!value) return "";
 
-  const date = new Date(value);
+  const text = String(value);
+  const date = new Date(
+    text.endsWith("Z") || text.includes("+") ? text : `${text}Z`
+  );
 
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
+  if (Number.isNaN(date.getTime())) return "";
 
   return date.toLocaleTimeString([], {
     hour: "2-digit",
@@ -22,25 +38,28 @@ function formatTime(value) {
   });
 }
 
-function sortMessages(list) {
-  return [...list].sort((first, second) => {
-    const firstTime = new Date(first.sentAt || 0).getTime();
-    const secondTime = new Date(second.sentAt || 0).getTime();
+async function readResponse(response) {
+  const text = await response.text();
 
-    return firstTime - secondTime;
-  });
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return text;
+  }
 }
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(
     () => localStorage.getItem("connectChatUser") || ""
   );
+  const [token, setToken] = useState(
+    () => localStorage.getItem("connectChatToken") || ""
+  );
 
-  const [authMode, setAuthMode] = useState("register");
+  const [authMode, setAuthMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authMessage, setAuthMessage] = useState("");
-  const [authError, setAuthError] = useState("");
 
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState("");
@@ -48,275 +67,193 @@ export default function App() {
   const [newMessage, setNewMessage] = useState("");
   const [messageError, setMessageError] = useState("");
 
-  const [unreadCounts, setUnreadCounts] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("connectChatUnread") || "{}");
-    } catch {
-      return {};
-    }
-  });
-
-  const [toast, setToast] = useState(null);
-  const [browserAlertsEnabled, setBrowserAlertsEnabled] = useState(
-    () =>
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted"
-  );
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [popup, setPopup] = useState("");
+  const [alertsEnabled, setAlertsEnabled] = useState(false);
 
   const knownMessageIds = useRef(new Set());
-  const inboxReady = useRef(false);
-  const selectedUserRef = useRef("");
-  const toastTimer = useRef(null);
+  const historyLoaded = useRef(false);
+  const popupTimer = useRef(null);
+  const messagesEndRef = useRef(null);
 
-  useEffect(() => {
-    selectedUserRef.current = selectedUser;
-  }, [selectedUser]);
+  function getHeaders(json = false) {
+    const headers = {};
 
-  useEffect(() => {
-    localStorage.setItem(
-      "connectChatUnread",
-      JSON.stringify(unreadCounts)
-    );
-  }, [unreadCounts]);
-
-  useEffect(() => {
-    return () => clearTimeout(toastTimer.current);
-  }, []);
-
-  function getHeaders(includeJson = false) {
-    const token = localStorage.getItem("connectChatToken");
-
-    return {
-      ...(includeJson ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
-  }
-
-  function logout() {
-    localStorage.removeItem("connectChatUser");
-    localStorage.removeItem("connectChatToken");
-    localStorage.removeItem("connectChatUnread");
-
-    setCurrentUser("");
-    setUsers([]);
-    setSelectedUser("");
-    setMessages([]);
-    setUnreadCounts({});
-    setToast(null);
-
-    knownMessageIds.current = new Set();
-    inboxReady.current = false;
-  }
-
-  async function apiFetch(path, options = {}) {
-    const response = await fetch(`${API_URL}${path}`, options);
-
-    if (response.status === 401 || response.status === 403) {
-      logout();
-      throw new Error("Your login session ended. Please log in again.");
+    if (json) {
+      headers["Content-Type"] = "application/json";
     }
 
-    return response;
+    const savedToken = token || localStorage.getItem("connectChatToken");
+
+    if (savedToken) {
+      headers.Authorization = `Bearer ${savedToken}`;
+    }
+
+    return headers;
   }
 
-  function showNewMessageAlert(sender, text) {
-    clearTimeout(toastTimer.current);
+  function showPopup(text) {
+    setPopup(text);
 
-    setToast({
-      sender,
-      text,
-    });
-
-    toastTimer.current = setTimeout(() => {
-      setToast(null);
-    }, 5000);
-
-    if (
-      document.visibilityState === "hidden" &&
-      "Notification" in window &&
-      Notification.permission === "granted"
-    ) {
-      new Notification(`New message from ${sender}`, {
-        body: text,
-      });
-    }
+    clearTimeout(popupTimer.current);
+    popupTimer.current = setTimeout(() => {
+      setPopup("");
+    }, 4000);
   }
 
   async function loadUsers() {
-    const response = await apiFetch("/users", {
-      headers: getHeaders(),
-    });
+    try {
+      const response = await fetch(`${API_URL}/users`, {
+        headers: getHeaders(),
+      });
 
-    if (!response.ok) {
-      throw new Error("Could not load users.");
-    }
+      if (!response.ok) return;
 
-    const data = await response.json();
+      const data = await readResponse(response);
+      const userList = Array.isArray(data) ? data : [];
 
-    const otherUsers = data.filter(
-      (user) => normalizeName(user) !== normalizeName(currentUser)
-    );
+      const otherUsers = userList.filter((user) => !sameUser(user, currentUser));
+      setUsers(otherUsers);
 
-    setUsers(otherUsers);
-
-    setSelectedUser((previousUser) => {
-      if (
-        previousUser &&
-        otherUsers.some(
-          (user) =>
-            normalizeName(user) === normalizeName(previousUser)
-        )
-      ) {
-        return previousUser;
+      if (!selectedUser && otherUsers.length > 0) {
+        setSelectedUser(otherUsers[0]);
       }
-
-      return otherUsers[0] || "";
-    });
+    } catch {
+      // The next refresh will try again.
+    }
   }
 
-  async function loadConversation(user = selectedUser) {
-    if (!currentUser || !user) {
+  async function loadConversation() {
+    if (!currentUser || !selectedUser) {
       setMessages([]);
       return;
     }
 
-    const response = await apiFetch(
-      `/messages/chat?firstUser=${encodeURIComponent(
-        currentUser
-      )}&secondUser=${encodeURIComponent(user)}`,
-      {
-        headers: getHeaders(),
-      }
-    );
+    try {
+      const response = await fetch(
+        `${API_URL}/messages/chat?firstUser=${encodeURIComponent(
+          currentUser
+        )}&secondUser=${encodeURIComponent(selectedUser)}`,
+        {
+          headers: getHeaders(),
+        }
+      );
 
-    if (!response.ok) {
-      throw new Error("Could not load messages.");
+      if (!response.ok) return;
+
+      const data = await readResponse(response);
+      const conversation = Array.isArray(data) ? data : [];
+
+      conversation.forEach((message) => {
+        knownMessageIds.current.add(messageKey(message));
+      });
+
+      setMessages(sortMessages(conversation));
+    } catch {
+      setMessageError("Cannot load messages right now.");
     }
-
-    const data = await response.json();
-
-    data.forEach((message) => {
-      knownMessageIds.current.add(message.id);
-    });
-
-    setMessages(sortMessages(data));
   }
 
-  async function checkForNewMessages() {
-    if (!currentUser) {
-      return;
-    }
+  async function checkNewMessages() {
+    if (!currentUser) return;
 
     try {
-      const response = await apiFetch("/messages", {
+      const response = await fetch(`${API_URL}/messages`, {
         headers: getHeaders(),
       });
 
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) return;
 
-      const allMessages = await response.json();
+      const data = await readResponse(response);
+      const allMessages = Array.isArray(data) ? data : [];
 
-      if (!inboxReady.current) {
+      if (!historyLoaded.current) {
         allMessages.forEach((message) => {
-          knownMessageIds.current.add(message.id);
+          knownMessageIds.current.add(messageKey(message));
         });
 
-        inboxReady.current = true;
+        historyLoaded.current = true;
         return;
       }
 
-      const newIncomingMessages = allMessages.filter((message) => {
-        const isNew = !knownMessageIds.current.has(message.id);
+      allMessages.forEach((message) => {
+        const id = messageKey(message);
 
-        knownMessageIds.current.add(message.id);
+        if (knownMessageIds.current.has(id)) return;
 
-        return (
-          isNew &&
-          normalizeName(message.receiver) ===
-            normalizeName(currentUser) &&
-          normalizeName(message.sender) !==
-            normalizeName(currentUser)
-        );
+        knownMessageIds.current.add(id);
+
+        const isIncoming = sameUser(message.receiver, currentUser);
+
+        if (!isIncoming) return;
+
+        if (sameUser(message.sender, selectedUser)) {
+          setMessages((oldMessages) => sortMessages([...oldMessages, message]));
+        } else {
+          setUnreadCounts((oldCounts) => ({
+            ...oldCounts,
+            [message.sender]: (oldCounts[message.sender] || 0) + 1,
+          }));
+        }
+
+        showPopup(`New message from ${message.sender}`);
+
+        if (
+          alertsEnabled &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          new Notification(`ConnectChat: ${message.sender}`, {
+            body: message.text,
+          });
+        }
       });
-
-      if (newIncomingMessages.length === 0) {
-        return;
-      }
-
-      setUnreadCounts((previousCounts) => {
-        const nextCounts = { ...previousCounts };
-
-        newIncomingMessages.forEach((message) => {
-          const senderKey = normalizeName(message.sender);
-
-          if (
-            senderKey !== normalizeName(selectedUserRef.current)
-          ) {
-            nextCounts[senderKey] = (nextCounts[senderKey] || 0) + 1;
-          }
-        });
-
-        return nextCounts;
-      });
-
-      const lastMessage =
-        newIncomingMessages[newIncomingMessages.length - 1];
-
-      showNewMessageAlert(lastMessage.sender, lastMessage.text);
-
-      const selectedUserKey = normalizeName(selectedUserRef.current);
-
-      if (
-        newIncomingMessages.some(
-          (message) =>
-            normalizeName(message.sender) === selectedUserKey
-        )
-      ) {
-        loadConversation(selectedUserRef.current).catch(() => {});
-      }
     } catch {
-      // The next check will try again.
+      // Poll again later.
     }
   }
 
   useEffect(() => {
-    if (!currentUser) {
-      return;
-    }
+    if (!currentUser || !token) return;
 
-    loadUsers().catch((error) => {
-      setMessageError(error.message);
-    });
+    knownMessageIds.current = new Set();
+    historyLoaded.current = false;
+    setUnreadCounts({});
 
-    checkForNewMessages();
+    loadUsers();
+    checkNewMessages();
 
-    const intervalId = setInterval(checkForNewMessages, 2000);
+    const timer = setInterval(checkNewMessages, 2000);
 
-    return () => clearInterval(intervalId);
-  }, [currentUser]);
+    return () => clearInterval(timer);
+  }, [currentUser, token, selectedUser]);
 
   useEffect(() => {
-    if (!currentUser || !selectedUser) {
-      return;
-    }
+    if (!currentUser || !selectedUser) return;
 
-    loadConversation().catch((error) => {
-      setMessageError(error.message);
-    });
-  }, [currentUser, selectedUser]);
+    setUnreadCounts((oldCounts) => ({
+      ...oldCounts,
+      [selectedUser]: 0,
+    }));
+
+    loadConversation();
+  }, [selectedUser, currentUser]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   async function handleAuth(event) {
     event.preventDefault();
 
-    setAuthError("");
-    setAuthMessage("");
+    const cleanUsername = username.trim();
 
-    if (!username.trim() || !password.trim()) {
-      setAuthError("Enter both username and password.");
+    if (!cleanUsername || !password) {
+      setAuthMessage("Enter both username and password.");
       return;
     }
+
+    setAuthMessage("");
 
     try {
       const endpoint =
@@ -324,76 +261,62 @@ export default function App() {
 
       const response = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: getHeaders(true),
         body: JSON.stringify({
-          username: username.trim(),
+          username: cleanUsername,
           password,
         }),
       });
 
-      if (authMode === "register") {
-        const text = await response.text();
+      const data = await readResponse(response);
 
-        if (!response.ok) {
-          throw new Error(text || "Registration failed.");
-        }
+      if (!response.ok) {
+        const error =
+          typeof data === "object" && data?.error
+            ? data.error
+            : typeof data === "string"
+              ? data
+              : "Request failed.";
 
-        setAuthMessage(
-          "Registration successful. Now click Login and use the same details."
-        );
-        setAuthMode("login");
-        setPassword("");
+        setAuthMessage(error);
         return;
       }
 
-      const data = await response.json().catch(() => ({}));
+      if (authMode === "register") {
+        setAuthMessage("Registration successful. Now click Login.");
+        setAuthMode("login");
+        return;
+      }
 
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Wrong username or password."
-        );
+      if (!data?.token || !data?.username) {
+        setAuthMessage("Login response is not correct.");
+        return;
       }
 
       localStorage.setItem("connectChatUser", data.username);
       localStorage.setItem("connectChatToken", data.token);
 
-      knownMessageIds.current = new Set();
-      inboxReady.current = false;
-
       setCurrentUser(data.username);
+      setToken(data.token);
       setUsername("");
       setPassword("");
-    } catch (error) {
-      setAuthError(error.message || "Cannot connect to the backend.");
+      setAuthMessage("");
+    } catch {
+      setAuthMessage("Cannot connect to the backend.");
     }
   }
 
-  function chooseUser(user) {
-    setSelectedUser(user);
-    setMessageError("");
-
-    setUnreadCounts((previousCounts) => {
-      const nextCounts = { ...previousCounts };
-      delete nextCounts[normalizeName(user)];
-      return nextCounts;
-    });
-  }
-
-  async function sendMessage(event) {
+  async function handleSend(event) {
     event.preventDefault();
 
     const text = newMessage.trim();
 
-    if (!text || !selectedUser) {
-      return;
-    }
+    if (!text || !selectedUser) return;
 
     setMessageError("");
 
     try {
-      const response = await apiFetch("/messages", {
+      const response = await fetch(`${API_URL}/messages`, {
         method: "POST",
         headers: getHeaders(true),
         body: JSON.stringify({
@@ -403,125 +326,123 @@ export default function App() {
         }),
       });
 
+      const data = await readResponse(response);
+
       if (!response.ok) {
-        throw new Error("Message could not be sent.");
+        setMessageError(
+          typeof data === "string" ? data : "Message could not be sent."
+        );
+        return;
       }
 
-      const savedMessage = await response.json();
-
-      knownMessageIds.current.add(savedMessage.id);
-
-      setMessages((previousMessages) =>
-        sortMessages([
-          ...previousMessages.filter(
-            (message) => message.id !== savedMessage.id
-          ),
-          savedMessage,
-        ])
-      );
+      if (data && typeof data === "object") {
+        knownMessageIds.current.add(messageKey(data));
+        setMessages((oldMessages) => sortMessages([...oldMessages, data]));
+      }
 
       setNewMessage("");
-    } catch (error) {
-      setMessageError(error.message);
+    } catch {
+      setMessageError("Message could not be sent.");
     }
   }
 
-  async function deleteMessage(messageId) {
-    if (!window.confirm("Delete this message?")) {
-      return;
-    }
-
-    setMessageError("");
-
+  async function deleteMessage(id) {
     try {
-      const response = await apiFetch(`/messages/${messageId}`, {
+      const response = await fetch(`${API_URL}/messages/${id}`, {
         method: "DELETE",
         headers: getHeaders(),
       });
 
       if (!response.ok) {
-        throw new Error("Message could not be deleted.");
+        setMessageError("Message could not be deleted.");
+        return;
       }
 
-      setMessages((previousMessages) =>
-        previousMessages.filter(
-          (message) => message.id !== messageId
-        )
+      setMessages((oldMessages) =>
+        oldMessages.filter((message) => String(message.id) !== String(id))
       );
-    } catch (error) {
-      setMessageError(error.message);
+    } catch {
+      setMessageError("Message could not be deleted.");
     }
   }
 
-  async function enableBrowserAlerts() {
+  async function enableAlerts() {
     if (!("Notification" in window)) {
-      setMessageError("This browser does not support pop-up alerts.");
+      showPopup("This browser does not support notifications.");
       return;
     }
 
     const permission = await Notification.requestPermission();
+    setAlertsEnabled(permission === "granted");
 
-    setBrowserAlertsEnabled(permission === "granted");
-
-    if (permission !== "granted") {
-      setMessageError(
-        "Notification permission was not allowed."
-      );
-    }
+    showPopup(
+      permission === "granted"
+        ? "Notifications enabled."
+        : "Notifications were not allowed."
+    );
   }
 
-  if (!currentUser) {
+  function chooseUser(user) {
+    setSelectedUser(user);
+
+    setUnreadCounts((oldCounts) => ({
+      ...oldCounts,
+      [user]: 0,
+    }));
+  }
+
+  function logout() {
+    localStorage.removeItem("connectChatUser");
+    localStorage.removeItem("connectChatToken");
+
+    setCurrentUser("");
+    setToken("");
+    setUsers([]);
+    setSelectedUser("");
+    setMessages([]);
+    setUnreadCounts({});
+    setAuthMode("login");
+  }
+
+  if (!currentUser || !token) {
     return (
       <main className="auth-page">
-        <section className="auth-card">
+        <form className="auth-card" onSubmit={handleAuth}>
           <h1>ConnectChat</h1>
-
           <p>
             {authMode === "register"
               ? "Create your account"
               : "Log in to continue"}
           </p>
 
-          <form onSubmit={handleAuth}>
-            <input
-              type="text"
-              placeholder="Username"
-              value={username}
-              onChange={(event) =>
-                setUsername(event.target.value)
-              }
-            />
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="Username"
+            autoComplete="username"
+          />
 
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(event) =>
-                setPassword(event.target.value)
-              }
-            />
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Password"
+            autoComplete={
+              authMode === "register" ? "new-password" : "current-password"
+            }
+          />
 
-            <button type="submit">
-              {authMode === "register" ? "Register" : "Login"}
-            </button>
-          </form>
+          <button type="submit">
+            {authMode === "register" ? "Register" : "Login"}
+          </button>
 
-          {authMessage && (
-            <p className="success-message">{authMessage}</p>
-          )}
-
-          {authError && (
-            <p className="error-message">{authError}</p>
-          )}
+          {authMessage && <p className="error-message">{authMessage}</p>}
 
           <button
             type="button"
-            className="auth-link"
+            className="auth-switch"
             onClick={() => {
-              setAuthMode(
-                authMode === "register" ? "login" : "register"
-              );
-              setAuthError("");
+              setAuthMode(authMode === "register" ? "login" : "register");
               setAuthMessage("");
             }}
           >
@@ -529,7 +450,7 @@ export default function App() {
               ? "Already have an account? Login"
               : "Need an account? Register"}
           </button>
-        </section>
+        </form>
       </main>
     );
   }
@@ -541,50 +462,34 @@ export default function App() {
         <p>Logged in as {currentUser}</p>
 
         <section className="user-list">
-          {users.length === 0 ? (
-            <p>No other users yet.</p>
-          ) : (
-            users.map((user) => {
-              const unreadCount =
-                unreadCounts[normalizeName(user)] || 0;
+          {users.map((user) => {
+            const unread = unreadCounts[user] || 0;
 
-              return (
-                <button
-                  type="button"
-                  key={user}
-                  className={`user-item ${
-                    normalizeName(user) ===
-                    normalizeName(selectedUser)
-                      ? "selected-user"
-                      : ""
-                  }`}
-                  onClick={() => chooseUser(user)}
-                >
-                  <span className="avatar">
-                    {user.charAt(0).toUpperCase()}
-                  </span>
+            return (
+              <button
+                type="button"
+                key={user}
+                className={`user-item ${
+                  sameUser(user, selectedUser) ? "selected-user" : ""
+                }`}
+                onClick={() => chooseUser(user)}
+              >
+                <span className="avatar">
+                  {user.charAt(0).toUpperCase()}
+                </span>
 
-                  <span>
-                    <strong>{user}</strong>
-                    <small>Registered user</small>
-                  </span>
+                <span className="user-details">
+                  <strong>{user}</strong>
+                  <small>Online</small>
+                </span>
 
-                  {unreadCount > 0 && (
-                    <span className="unread-badge">
-                      {unreadCount > 9 ? "9+" : unreadCount}
-                    </span>
-                  )}
-                </button>
-              );
-            })
-          )}
+                {unread > 0 && <span className="unread-badge">{unread}</span>}
+              </button>
+            );
+          })}
         </section>
 
-        <button
-          type="button"
-          className="logout-button"
-          onClick={logout}
-        >
+        <button type="button" className="logout-button" onClick={logout}>
           Logout
         </button>
       </aside>
@@ -596,100 +501,79 @@ export default function App() {
               <span className="avatar">
                 {selectedUser.charAt(0).toUpperCase()}
               </span>
-
               <div>
                 <h2>{selectedUser}</h2>
-                <small>Registered user</small>
+                <small>Online</small>
               </div>
-
-              <button
-                type="button"
-                className="alerts-button"
-                onClick={enableBrowserAlerts}
-              >
-                {browserAlertsEnabled
-                  ? "Alerts on"
-                  : "Enable alerts"}
-              </button>
             </>
           ) : (
-            <h2>Select a user to begin</h2>
+            <h2>Select a user</h2>
           )}
+
+          <button
+            type="button"
+            className="alerts-button"
+            onClick={enableAlerts}
+          >
+            {alertsEnabled ? "Alerts enabled" : "Enable alerts"}
+          </button>
         </header>
 
         <section className="messages-area">
-          {!selectedUser ? (
-            <p>Select a user from the left side.</p>
-          ) : messages.length === 0 ? (
+          {popup && <div className="message-popup">{popup}</div>}
+
+          {!selectedUser && <p>Select a user to start chatting.</p>}
+
+          {selectedUser && messages.length === 0 && (
             <p>No messages yet.</p>
-          ) : (
-            messages.map((message) => {
-              const isMine =
-                normalizeName(message.sender) ===
-                normalizeName(currentUser);
-
-              return (
-                <article
-                  key={message.id}
-                  className={
-                    isMine
-                      ? "message my-message"
-                      : "message other-message"
-                  }
-                >
-                  <p>{message.text}</p>
-                  <small>{formatTime(message.sentAt)}</small>
-
-                  {isMine && (
-                    <button
-                      type="button"
-                      className="delete-button"
-                      onClick={() => deleteMessage(message.id)}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </article>
-              );
-            })
           )}
+
+          {messages.map((message) => {
+            const isMine = sameUser(message.sender, currentUser);
+
+            return (
+              <article
+                key={messageKey(message)}
+                className={`message ${
+                  isMine ? "my-message" : "other-message"
+                }`}
+              >
+                <p>{message.text}</p>
+                <small>{formatTime(message.sentAt)}</small>
+
+                {isMine && (
+                  <button
+                    type="button"
+                    className="delete-button"
+                    onClick={() => deleteMessage(message.id)}
+                  >
+                    Delete
+                  </button>
+                )}
+              </article>
+            );
+          })}
+
+          <div ref={messagesEndRef} />
         </section>
 
-        {messageError && (
-          <p className="error-message">{messageError}</p>
-        )}
+        {messageError && <p className="error-message">{messageError}</p>}
 
-        <form className="message-form" onSubmit={sendMessage}>
+        <form className="message-form" onSubmit={handleSend}>
           <input
-            type="text"
-            placeholder={
-              selectedUser
-                ? "Type a message..."
-                : "Select a user first"
-            }
             value={newMessage}
-            onChange={(event) =>
-              setNewMessage(event.target.value)
+            onChange={(event) => setNewMessage(event.target.value)}
+            placeholder={
+              selectedUser ? "Type a message..." : "Select a user first"
             }
             disabled={!selectedUser}
           />
 
-          <button type="submit" disabled={!selectedUser}>
+          <button type="submit" disabled={!selectedUser || !newMessage.trim()}>
             Send
           </button>
         </form>
       </section>
-
-      {toast && (
-        <button
-          type="button"
-          className="message-toast"
-          onClick={() => chooseUser(toast.sender)}
-        >
-          <strong>New message from {toast.sender}</strong>
-          <span>{toast.text}</span>
-        </button>
-      )}
     </main>
   );
 }
