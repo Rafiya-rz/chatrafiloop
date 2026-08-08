@@ -13,16 +13,20 @@ public class JwtService {
     @Value("${jwt.secret}")
     private String jwtSecret;
 
+    private Algorithm algorithm() {
+        return Algorithm.HMAC256(jwtSecret);
+    }
+
     public String createToken(String username) {
         return JWT.create()
                 .withSubject(username)
                 .withIssuedAt(new Date())
-                .withExpiresAt(new Date(System.currentTimeMillis() + 86_400_000))
-                .sign(Algorithm.HMAC256(jwtSecret));
+                .withExpiresAt(new Date(System.currentTimeMillis() + 86_400_000L))
+                .sign(algorithm());
     }
 
     public String getUsernameFromToken(String token) {
-        return JWT.require(Algorithm.HMAC256(jwtSecret))
+        return JWT.require(algorithm())
                 .build()
                 .verify(token)
                 .getSubject();
